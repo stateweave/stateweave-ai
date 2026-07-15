@@ -36,9 +36,9 @@ type SavedSession = {
 const SESSION_KEY = "stateweave-ai-session-v1";
 const emptyGraph: StateGraph = { nodes: [], edges: [] };
 const suggestions = [
-  "Help me shape an idea",
-  "Remember the people in my project",
-  "Think through a difficult decision",
+  "A decision I am making",
+  "A project already in motion",
+  "Something I want remembered",
 ];
 
 export default function Home() {
@@ -159,7 +159,7 @@ export default function Home() {
   const hasConversation = messages.length > 0;
 
   return (
-    <main className="shell">
+    <main className={`shell ${hasConversation ? "is-chatting" : "is-empty"}`}>
       <nav className="nav" aria-label="Primary navigation">
         <Link className="wordmark" href="/" aria-label="StateWeave home">
           <BrandMark className="mark" />
@@ -179,9 +179,7 @@ export default function Home() {
         <div className="conversation-panel">
           {!hasConversation ? (
             <header className="intro">
-              <p className="eyebrow">A mind with continuity</p>
-              <h1>Keep the<br />whole picture.</h1>
-              <p className="subhead">Chat with the real StateWeave agent. Watch its memory form as connected knowledge, not a disappearing transcript.</p>
+              <h1>What should<br />not be lost?</h1>
             </header>
           ) : (
             <div className="messages" aria-live="polite">
@@ -203,7 +201,7 @@ export default function Home() {
 
           <div className="prompt-area">
             <form className="composer" onSubmit={submit}>
-              <label htmlFor="prompt">What are you working through?</label>
+              <label htmlFor="prompt">Begin anywhere.</label>
               <div className="input-row">
                 <Plus className="prompt-mark" size={18} aria-hidden="true" />
                 <textarea
@@ -219,7 +217,7 @@ export default function Home() {
                   }}
                   rows={1}
                   maxLength={4_000}
-                  placeholder="Ask StateWeave"
+                  placeholder="Tell StateWeave what matters"
                   disabled={sending}
                 />
                 <button className="send" type="submit" aria-label="Send prompt" disabled={sending || !prompt.trim()}>
