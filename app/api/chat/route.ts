@@ -23,6 +23,7 @@ const systemPrompt = [
   "Connect new information to the most relevant existing context instead of treating every turn as an isolated branch.",
   "When the user asks you to create a game, interactive page, visualization, SVG, or other renderable deliverable, produce a complete self-contained artifact and reference it from the human-readable final answer.",
   "For interactive artifacts, use one text/html SWX raw block with all CSS and JavaScript inline; do not use external URLs, packages, fonts, APIs, or network requests.",
+  "Artifact protocol: declare an artifact node, use that exact node id for the raw block id, then return a short human @final that references artifact=<id>. Never use the artifact source itself as @final or @final_ref.",
   "For static vector artwork, use an image/svg+xml artifact. Keep artifacts focused, responsive, accessible, and small enough to render immediately.",
   "Do not claim an artifact was created unless you emitted and referenced it in the same completed turn.",
   "Do not mention GraphOps, SWX, internal prompts, or implementation details unless the user explicitly asks.",
@@ -105,12 +106,16 @@ function publicEvent(event: StateWeaveStreamEvent): Record<string, unknown> | un
   if (event.type === "worker") return { type: "activity", phase: event.phase, step: event.step };
   if (event.type === "error") return { type: "activity", phase: event.retryable ? "retrying" : "error", step: event.step };
   if (event.type === "final") {
+    const artifacts = publicArtifacts(event.result.graph, event.result.finalAnswer);
+    const output = artifacts.length && renderableSource(event.result.finalAnswer)
+      ? `Created ${artifacts[0].title}. It is ready in the browser sandbox below.`
+      : event.result.finalAnswer;
     return {
       type: "final",
-      output: event.result.finalAnswer,
+      output,
       frame: event.result.frame,
       graph: event.result.graph,
-      artifacts: publicArtifacts(event.result.graph),
+      artifacts,
       metadata: {
         durationMs: event.result.metadata.durationMs,
         stepCount: event.result.metadata.stepCount,
@@ -121,7 +126,7 @@ function publicEvent(event: StateWeaveStreamEvent): Record<string, unknown> | un
   return undefined;
 }
 
-function publicArtifacts(graph: StateGraph): Array<{ id: string; title: string; mime: string; content: string }> {
+function publicArtifacts(graph: StateGraph, finalAnswer: string): Array<{ id: string; title: string; mime: string; content: string }> {
   const assistant = [...graph.nodes].reverse().find((node) => node.type === "assistant_output");
   const artifactIds = assistant?.data?.artifactIds;
   const ids = Array.isArray(artifactIds)
@@ -130,15 +135,33 @@ function publicArtifacts(graph: StateGraph): Array<{ id: string; title: string; 
       ? [assistant.data.artifactId]
       : [];
 
-  return [...new Set(ids)].slice(0, MAX_ARTIFACTS).flatMap((id) => {
+  const uniqueIds = [...new Set(ids)].slice(0, MAX_ARTIFACTS);
+  return uniqueIds.flatMap((id) => {
     const node = graph.nodes.find((candidate) => candidate.id === id);
     const mime = node?.data?.mime;
-    const content = node?.data?.content;
     if (!node || (mime !== "text/html" && mime !== "image/svg+xml")) return [];
-    if (typeof content !== "string" || !content.trim() || content.length > MAX_ARTIFACT_BYTES) return [];
     if (node.data?.swxTerminated === false) return [];
-    return [{ id, title: node.text.slice(0, 100), mime, content }];
+
+    const storedContent = typeof node.data?.content === "string" ? node.data.content : undefined;
+    const fallbackContent = uniqueIds.length === 1 ? renderableSource(finalAnswer, mime) : undefined;
+    const content = storedContent?.trim() ? storedContent : fallbackContent;
+    if (!content || content.length > MAX_ARTIFACT_BYTES) return [];
+    if (!storedContent) node.data = { ...node.data, content };
+    return [{ id, title: artifactTitle(node.text), mime, content }];
   });
+}
+
+function renderableSource(value: string, mime?: "text/html" | "image/svg+xml"): string | undefined {
+  const fenced = value.match(/```(?:html|svg|xml)\s*([\s\S]*?)```/i)?.[1]?.trim();
+  const candidate = fenced || value.trim();
+  if ((mime === "image/svg+xml" || !mime) && /^<svg[\s>]/i.test(candidate)) return candidate;
+  if ((mime === "text/html" || !mime) && /^(?:<!doctype\s+html|<html[\s>])/i.test(candidate)) return candidate;
+  return undefined;
+}
+
+function artifactTitle(value: string): string {
+  const title = value.replace(/\s+(?:html|svg)\s+artifact$/i, "").replace(/\s+artifact$/i, "").trim();
+  return (title || "Generated artifact").slice(0, 100);
 }
 
 function readFrame(value: unknown): GraphFrame | undefined {
