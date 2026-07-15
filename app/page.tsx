@@ -3,6 +3,7 @@
 import { ArrowUp, Plus } from "@phosphor-icons/react";
 import Link from "next/link";
 import { FormEvent, useRef, useState } from "react";
+import { BrandMark } from "./brand-mark";
 
 const prompts = [
   "Help me think this through",
@@ -34,8 +35,8 @@ export default function Home() {
     <main className="shell">
       <nav className="nav" aria-label="Primary navigation">
         <Link className="wordmark" href="/" aria-label="StateWeave home">
-          <span className="mark" aria-hidden="true"><i /><i /><i /></span>
-          StateWeave
+          <BrandMark className="mark" />
+          <span>StateWeave</span>
         </Link>
         <a className="primitive-link" href="https://stateweave.dev">
           For builders <span aria-hidden="true">↗</span>

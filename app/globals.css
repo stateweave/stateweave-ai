@@ -96,23 +96,26 @@
   }
 
   .mark {
-    position: relative;
-    display: grid;
-    width: 19px;
-    height: 19px;
-    place-items: center;
-    transform: rotate(-8deg);
+    width: 21px;
+    height: 21px;
+    overflow: visible;
   }
 
-  .mark i {
-    position: absolute;
-    width: 17px;
-    height: 7px;
-    border: 1.5px solid var(--green);
-    border-radius: 50%;
+  .brand-thread, .brand-state {
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
-  .mark i:nth-child(2) { transform: rotate(60deg); }
-  .mark i:nth-child(3) { transform: rotate(120deg); border-color: var(--coral); }
+
+  .brand-thread {
+    stroke: var(--green);
+    stroke-width: 8;
+  }
+
+  .brand-state {
+    stroke: var(--coral);
+    stroke-width: 8;
+  }
 
   .primitive-link {
     font-family: var(--font-mono), monospace;
