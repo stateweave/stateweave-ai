@@ -27,10 +27,19 @@ type Message = {
   artifacts?: Artifact[];
 };
 
+type TraceItem = {
+  id: string;
+  label: string;
+  detail: string;
+  status: "active" | "done" | "retrying" | "error";
+  step?: number;
+};
+
 type StreamEvent = {
   type: "activity" | "graph" | "final" | "error";
   phase?: string;
   step?: number;
+  operationCount?: number;
   output?: string;
   frame?: GraphFrame;
   graph?: StateGraph;
@@ -42,6 +51,7 @@ type StreamEvent = {
 type SavedSession = {
   messages: Message[];
   frame?: GraphFrame;
+  trace?: TraceItem[];
 };
 
 const SESSION_KEY = "stateweave-ai-session-v1";
@@ -61,6 +71,8 @@ export default function Home() {
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
   const [openArtifact, setOpenArtifact] = useState<Artifact>();
+  const [trace, setTrace] = useState<TraceItem[]>([]);
+  const traceRef = useRef<TraceItem[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -70,6 +82,10 @@ export default function Home() {
         const saved = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as SavedSession | null;
         if (saved?.messages && Array.isArray(saved.messages)) setMessages(saved.messages.slice(-80));
         if (saved?.frame?.graph) setFrame(saved.frame);
+        if (Array.isArray(saved?.trace)) {
+          traceRef.current = saved.trace.slice(-8);
+          setTrace(traceRef.current);
+        }
       } catch {
         localStorage.removeItem(SESSION_KEY);
       } finally {
@@ -92,6 +108,17 @@ export default function Home() {
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [openArtifact]);
 
+  function recordTrace(item: TraceItem): TraceItem[] {
+    const settled = traceRef.current.map((entry) => entry.status === "active" && entry.id !== item.id ? { ...entry, status: "done" as const } : entry);
+    const existingIndex = settled.findIndex((entry) => entry.id === item.id);
+    const next = existingIndex === -1
+      ? [...settled, item].slice(-8)
+      : settled.map((entry, index) => index === existingIndex ? item : entry).slice(-8);
+    traceRef.current = next;
+    setTrace(next);
+    return next;
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const input = prompt.trim();
@@ -104,6 +131,8 @@ export default function Home() {
     setError("");
     setSending(true);
     setActivity("Opening the graph");
+    traceRef.current = [{ id: "request", label: "Request received", detail: "Opening the current GraphFrame", status: "done" }];
+    setTrace(traceRef.current);
 
     try {
       const response = await fetch("/api/chat", {
@@ -131,10 +160,20 @@ export default function Home() {
           const streamEvent = JSON.parse(line) as StreamEvent;
           if (streamEvent.type === "graph" && streamEvent.frame && streamEvent.graph) {
             setFrame(streamEvent.frame);
-            setActivity(streamEvent.phase === "before" ? "Reading the whole picture" : "Graph updated");
+            const count = `${streamEvent.graph.nodes.length} nodes · ${streamEvent.graph.edges.length} edges`;
+            if (streamEvent.phase === "before") {
+              setActivity("Reading the whole picture");
+              recordTrace({ id: `read-${streamEvent.step ?? 0}`, label: "Read graph", detail: count, status: "done", step: streamEvent.step });
+              recordTrace({ id: `model-${streamEvent.step ?? 0}`, label: "Model call", detail: `Step ${streamEvent.step ?? 1} · preparing GraphOps`, status: "active", step: streamEvent.step });
+            } else {
+              setActivity("Graph updated");
+              recordTrace({ id: `commit-${streamEvent.step ?? 0}`, label: "Committed graph", detail: count, status: "done", step: streamEvent.step });
+            }
           } else if (streamEvent.type === "activity") {
             setActivity(activityLabel(streamEvent.phase, streamEvent.step));
+            recordTrace(traceItem(streamEvent));
           } else if (streamEvent.type === "error") {
+            recordTrace({ id: "failed", label: "Turn stopped", detail: streamEvent.message ?? "The turn could not complete", status: "error" });
             throw new Error(streamEvent.message ?? "StateWeave could not complete this turn.");
           } else if (streamEvent.type === "final") {
             finalEvent = streamEvent;
@@ -154,7 +193,13 @@ export default function Home() {
       setMessages(nextMessages);
       setFrame(finalEvent.frame);
       setActivity(finalEvent.metadata?.stepCount ? `Woven in ${finalEvent.metadata.stepCount} step${finalEvent.metadata.stepCount === 1 ? "" : "s"}` : "Graph updated");
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ messages: nextMessages, frame: finalEvent.frame } satisfies SavedSession));
+      const finalTrace = recordTrace({
+        id: "complete",
+        label: finalEvent.artifacts?.length ? "Artifact rendered" : "Turn complete",
+        detail: runSummary(finalEvent.metadata),
+        status: "done",
+      });
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ messages: nextMessages, frame: finalEvent.frame, trace: finalTrace } satisfies SavedSession));
     } catch (caught) {
       setFrame(previousFrame);
       setActivity("Graph unchanged");
@@ -173,6 +218,8 @@ export default function Home() {
     setError("");
     setActivity("Ready");
     setOpenArtifact(undefined);
+    traceRef.current = [];
+    setTrace([]);
     localStorage.removeItem(SESSION_KEY);
     inputRef.current?.focus();
   }
@@ -292,6 +339,7 @@ export default function Home() {
               <div><dt>Edges</dt><dd>{graph.edges.length}</dd></div>
             </dl>
           </header>
+          <TraceRail items={trace} active={sending} />
           <GraphView graph={graph} active={sending} />
           <footer className="memory-footer">
             <span>StateGraph</span>
@@ -319,6 +367,22 @@ export default function Home() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+function TraceRail({ items, active }: { items: TraceItem[]; active: boolean }) {
+  return (
+    <section className="trace-rail" aria-label="StateWeave run trace" aria-live="polite">
+      <header><span>Run trace</span><em>{active ? "Live" : items.length ? "Last turn" : "Ready"}</em></header>
+      <ol>
+        {items.length ? items.map((item) => (
+          <li key={item.id} className={`trace-${item.status}`}>
+            <i aria-hidden="true" />
+            <div><strong>{item.label}</strong><span>{item.detail}</span></div>
+          </li>
+        )) : <li className="trace-idle"><i aria-hidden="true" /><div><strong>Graph ready</strong><span>Waiting for a request</span></div></li>}
+      </ol>
+    </section>
   );
 }
 
@@ -389,7 +453,30 @@ function MessageContent({ content, markdown }: { content: string; markdown: bool
   );
 }
 
+function traceItem(event: StreamEvent): TraceItem {
+  const step = event.step ?? 0;
+  if (event.phase === "weaving" || event.phase === "ops") {
+    return { id: `ops-${step}`, label: "GraphOps", detail: `${event.operationCount ?? 0} operation${event.operationCount === 1 ? "" : "s"} validated`, status: "done", step };
+  }
+  if (event.phase === "retrying") return { id: `retry-${step}`, label: "Retrying GraphOps", detail: `Step ${step} did not validate`, status: "retrying", step };
+  if (event.phase === "error") return { id: `error-${step}`, label: "GraphOps rejected", detail: `Step ${step} stopped`, status: "error", step };
+  if (["queued", "started", "token", "done", "merged"].includes(event.phase ?? "")) {
+    const done = event.phase === "done" || event.phase === "merged";
+    return { id: `worker-${step}`, label: "Parallel branch", detail: done ? "Branch merged into the graph" : "Exploring focused context", status: done ? "done" : "active", step };
+  }
+  if (event.phase === "starting") return { id: "starting", label: "Starting run", detail: "Preparing graph-native context", status: "active" };
+  return { id: `model-${step}`, label: "Model call", detail: `Step ${step || 1} · preparing GraphOps`, status: "active", step };
+}
+
+function runSummary(metadata?: StreamEvent["metadata"]): string {
+  const steps = metadata?.stepCount ?? 0;
+  const retries = metadata?.retryCount ?? 0;
+  const duration = metadata?.durationMs ? ` · ${(metadata.durationMs / 1_000).toFixed(1)}s` : "";
+  return `${steps} step${steps === 1 ? "" : "s"}${retries ? ` · ${retries} retr${retries === 1 ? "y" : "ies"}` : ""}${duration}`;
+}
+
 function activityLabel(phase?: string, step?: number): string {
+  if (phase === "starting") return "Preparing the graph";
   const suffix = step ? ` · step ${step}` : "";
   if (phase === "weaving" || phase === "ops") return `Weaving new connections${suffix}`;
   if (phase === "retrying") return `Refining the graph${suffix}`;

@@ -92,7 +92,7 @@ export async function POST(request: Request): Promise<Response> {
 }
 
 function publicEvent(event: StateWeaveStreamEvent): Record<string, unknown> | undefined {
-  if (event.type === "metadata") return { type: "activity", phase: "thinking", step: event.metadata.stepCount };
+  if (event.type === "metadata") return { type: "activity", phase: "starting", step: event.metadata.stepCount };
   if (event.type === "frame") {
     return {
       type: "graph",

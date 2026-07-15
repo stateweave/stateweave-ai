@@ -458,7 +458,7 @@
     border: 1px solid var(--line);
     border-radius: 20px;
     display: grid;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: auto auto 1fr auto;
     background: var(--panel);
     box-shadow: 0 35px 90px -50px var(--shadow), inset 0 1px 0 color-mix(in srgb, var(--ink) 6%, transparent);
   }
@@ -505,23 +505,101 @@
     border-radius: 50%;
   }
 
+  .trace-rail {
+    position: relative;
+    z-index: 3;
+    min-width: 0;
+    padding: 2px 22px 10px;
+  }
+  .trace-rail > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    color: var(--muted);
+    font-family: var(--font-mono), monospace;
+    font-size: 9px;
+  }
+  .trace-rail > header span { color: var(--ink); font-weight: 650; }
+  .trace-rail > header em { color: var(--green); font-style: normal; }
+  .trace-rail ol {
+    display: flex;
+    gap: 7px;
+    margin: 0;
+    overflow-x: auto;
+    padding: 0 0 2px;
+    list-style: none;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+  .trace-rail li {
+    min-width: 142px;
+    max-width: 190px;
+    border-left: 2px solid var(--line);
+    display: grid;
+    grid-template-columns: 7px 1fr;
+    align-items: start;
+    gap: 7px;
+    padding: 5px 9px 5px 8px;
+    background: color-mix(in srgb, var(--paper) 28%, transparent);
+  }
+  .trace-rail li > i { width: 6px; height: 6px; margin-top: 3px; background: var(--muted); }
+  .trace-rail li > div { min-width: 0; display: grid; gap: 2px; }
+  .trace-rail li strong {
+    overflow: hidden;
+    font-family: var(--font-mono), monospace;
+    font-size: 9px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .trace-rail li span {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 9px;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .trace-rail .trace-active { border-color: var(--green); }
+  .trace-rail .trace-active > i { background: var(--green-bright); }
+  .trace-rail .trace-done { border-color: color-mix(in srgb, var(--green) 62%, transparent); }
+  .trace-rail .trace-done > i { background: var(--green); }
+  .trace-rail .trace-retrying { border-color: var(--coral); }
+  .trace-rail .trace-retrying > i,
+  .trace-rail .trace-error > i { background: var(--coral); }
+  .trace-rail .trace-error { border-color: var(--danger); }
+
   .graph-visual { position: relative; min-height: 0; overflow: hidden; }
-  .graph-visual svg { width: 100%; height: 100%; min-height: 380px; overflow: visible; }
+  .graph-visual svg { width: 100%; height: 100%; min-height: 380px; overflow: visible; touch-action: none; }
+  .graph-help {
+    position: absolute;
+    z-index: 2;
+    top: 7px;
+    right: 14px;
+    color: var(--muted);
+    font-family: var(--font-mono), monospace;
+    font-size: 8px;
+    pointer-events: none;
+  }
 
   .graph-edge {
     stroke: color-mix(in srgb, var(--green-deep) 32%, transparent);
     stroke-width: 1.3;
     vector-effect: non-scaling-stroke;
+    transition: stroke 180ms ease, stroke-width 180ms ease;
     animation: edge-in 700ms cubic-bezier(.16, 1, .3, 1) both;
   }
+  .graph-edge.is-selected { stroke: color-mix(in srgb, var(--green) 78%, transparent); stroke-width: 2; }
   .edge-contradicts, .edge-constrains { stroke: color-mix(in srgb, var(--coral) 55%, transparent); }
 
   .graph-node {
-    cursor: pointer;
+    cursor: grab;
     outline: none;
-    transition: transform 700ms cubic-bezier(.16, 1, .3, 1);
     animation: node-in 520ms cubic-bezier(.16, 1, .3, 1) both;
   }
+  .graph-node:active { cursor: grabbing; }
+  .graph-node.is-pinned .node-core { stroke: var(--coral); stroke-width: 3; }
   .node-core { fill: var(--green-deep); stroke: var(--panel); stroke-width: 3; transition: r 180ms ease, fill 180ms ease; }
   .node-halo { fill: color-mix(in srgb, var(--green-bright) 16%, transparent); opacity: 0; transition: opacity 180ms ease; }
   .graph-node:hover .node-halo, .graph-node:focus .node-halo, .graph-node.is-selected .node-halo { opacity: 1; }
@@ -870,7 +948,7 @@
     .is-empty .composer { box-shadow: 7px 7px 0 var(--coral); }
     .is-empty .composer:focus-within { box-shadow: 10px 10px 0 var(--coral); }
     .memory-panel { min-height: 390px; }
-    .has-conversation .memory-panel { order: -1; min-height: 270px; height: 32dvh; }
+    .has-conversation .memory-panel { order: -1; min-height: 280px; height: 36dvh; }
     .has-conversation .conversation-panel { min-height: 58dvh; padding: 0; }
     .has-conversation .messages { max-height: 52dvh; }
     .graph-visual svg { min-height: 250px; }
@@ -916,13 +994,17 @@
     .has-conversation.agent-stage {
       height: calc(100dvh - 64px);
       min-height: 0;
-      grid-template-rows: clamp(170px, 32dvh, 270px) minmax(0, 1fr);
+      grid-template-rows: clamp(220px, 36dvh, 300px) minmax(0, 1fr);
       overflow: hidden;
     }
     .has-conversation .memory-panel { min-height: 0; height: auto; }
     .has-conversation .conversation-panel { min-height: 0; height: auto; overflow: hidden; }
     .has-conversation .messages { max-height: none; min-height: 0; padding-inline: 0; }
-    .memory-header { padding: 16px 16px 4px; }
+    .memory-header { padding: 14px 16px 3px; }
+    .trace-rail { padding: 1px 16px 7px; }
+    .trace-rail > header { margin-bottom: 4px; }
+    .trace-rail li { min-width: 132px; padding-block: 4px; }
+    .graph-help { top: 4px; right: 10px; font-size: 7px; }
     .memory-header dl { gap: 10px; }
     .memory-header dl div { display: block; text-align: right; }
     .memory-header dt { display: block; }
