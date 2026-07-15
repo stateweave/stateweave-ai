@@ -3,6 +3,8 @@
 import { ArrowUp, Trash } from "@phosphor-icons/react";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { BrandMark } from "./brand-mark";
 import { GraphView, type StateGraph } from "./graph-view";
 
@@ -180,6 +182,7 @@ export default function Home() {
           {!hasConversation ? (
             <header className="intro">
               <h1>What should<br />not be lost?</h1>
+              <p>Bring the decision, project, or context. StateWeave keeps the connections alive.</p>
             </header>
           ) : (
             <div className="messages" aria-live="polite">
@@ -190,7 +193,7 @@ export default function Home() {
                       <i className="turn-marker" aria-hidden="true" />
                       <span>{message.role === "user" ? "You" : "StateWeave"}</span>
                     </header>
-                    <MessageContent content={message.content} />
+                    <MessageContent content={message.content} markdown={message.role === "assistant"} />
                   </div>
                 </article>
               ))}
@@ -270,7 +273,15 @@ export default function Home() {
   );
 }
 
-function MessageContent({ content }: { content: string }) {
+function MessageContent({ content, markdown }: { content: string; markdown: boolean }) {
+  if (markdown) {
+    return (
+      <div className="message-content markdown-content">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      </div>
+    );
+  }
+
   const blocks = content.split(/\n{2,}/).filter(Boolean);
   return (
     <div className="message-content">
