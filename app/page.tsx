@@ -162,6 +162,8 @@ export default function Home() {
 
   return (
     <main className={`shell ${hasConversation ? "is-chatting" : "is-empty"}`}>
+      {!hasConversation ? <HeroWeave /> : null}
+
       <nav className="nav" aria-label="Primary navigation">
         <Link className="wordmark" href="/" aria-label="StateWeave home">
           <BrandMark className="mark" />
@@ -270,6 +272,17 @@ export default function Home() {
         </aside>
       </section>
     </main>
+  );
+}
+
+function HeroWeave() {
+  return (
+    <div className="hero-weave" aria-hidden="true">
+      <div className="hero-warps"><i /><i /><i /><i /><i /><i /><i /></div>
+      <div className="hero-weft hero-weft-top"><i /><i /><i /></div>
+      <div className="hero-weft hero-weft-bottom"><i /><i /><i /></div>
+      <span className="hero-state-stitch" />
+    </div>
   );
 }
 
