@@ -108,10 +108,9 @@
     letter-spacing: -0.03em;
   }
 
-  .mark { width: 21px; height: 21px; overflow: visible; }
-  .brand-thread, .brand-state { fill: none; stroke-linecap: round; stroke-linejoin: round; }
-  .brand-thread { stroke: var(--green); stroke-width: 8; }
-  .brand-state { stroke: var(--coral); stroke-width: 8; }
+  .mark { width: 23px; height: 23px; overflow: visible; }
+  .brand-warp, .brand-over { fill: var(--green); }
+  .brand-weft { fill: var(--coral); }
 
   .nav-actions { display: flex; align-items: center; gap: 18px; }
 
@@ -197,7 +196,7 @@
     text-transform: uppercase;
   }
 
-  .is-empty .prompt-mark { color: var(--coral); }
+  .is-empty .composer-thread { background: var(--coral); }
   .is-empty .send {
     border-radius: 2px;
     color: var(--paper);
@@ -292,7 +291,14 @@
   }
 
   .input-row { display: grid; grid-template-columns: 38px 1fr 38px; align-items: end; gap: 7px; }
-  .prompt-mark { align-self: center; margin: 0 auto; color: var(--muted); }
+  .composer-thread {
+    align-self: center;
+    justify-self: center;
+    width: 14px;
+    height: 2px;
+    background: var(--green);
+    box-shadow: 0 -4px 0 color-mix(in srgb, var(--green) 45%, transparent), 0 4px 0 color-mix(in srgb, var(--green) 45%, transparent);
+  }
 
   textarea {
     width: 100%;
@@ -486,42 +492,60 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
-    padding: 18px 8px 8px;
+    padding: 24px 8px 12px;
     scrollbar-width: thin;
     scrollbar-color: var(--line) transparent;
   }
 
-  .message { max-width: 88%; margin: 0 0 28px; }
-  .message.user { margin-left: auto; }
-  .message > span {
-    display: block;
-    margin: 0 0 7px;
+  .message { width: 100%; margin: 0 0 32px; }
+  .message-body { position: relative; max-width: 64ch; }
+  .message.assistant .message-body {
+    border-left: 2px solid var(--green);
+    padding: 1px 4px 1px 20px;
+  }
+  .message.user .message-body {
+    width: fit-content;
+    max-width: min(92%, 58ch);
+    margin-left: auto;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--coral);
+    border-radius: 12px;
+    padding: 12px 15px 13px;
+    background: color-mix(in srgb, var(--panel) 67%, var(--paper));
+  }
+  .message-meta {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 0 8px;
     color: var(--green);
     font-family: var(--font-mono), monospace;
-    font-size: 9px;
-    font-weight: 650;
-    letter-spacing: .08em;
-    text-transform: uppercase;
+    font-size: 10px;
+    font-weight: 620;
+    letter-spacing: .015em;
   }
-  .message.user > span { color: var(--coral); text-align: right; }
-  .message p {
+  .message.user .message-meta { margin-bottom: 6px; color: var(--danger); }
+  .turn-marker {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    background: currentColor;
+  }
+  .message-content { display: grid; gap: 14px; }
+  .message-content p {
     margin: 0;
     white-space: pre-wrap;
     color: var(--ink);
-    font-size: 15px;
-    line-height: 1.6;
+    font-size: 15.5px;
+    letter-spacing: -.01em;
+    line-height: 1.62;
   }
-  .message.user p {
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 12px 14px;
-    background: color-mix(in srgb, var(--panel) 65%, transparent);
-  }
+  .message.user .message-content { gap: 9px; }
+  .message.user .message-content p { font-size: 14.5px; line-height: 1.5; }
 
-  .thinking-lines { display: grid; gap: 7px; width: min(360px, 80%); }
-  .thinking-lines i { display: block; height: 9px; border-radius: 999px; background: color-mix(in srgb, var(--green) 13%, transparent); overflow: hidden; }
-  .thinking-lines i:nth-child(2) { width: 82%; }
-  .thinking-lines i:nth-child(3) { width: 58%; }
+  .pending-state { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; }
+  .weave-loader { display: flex; align-items: center; gap: 3px; height: 12px; }
+  .weave-loader i { display: block; width: 2px; height: 8px; background: var(--green); transform-origin: center; }
 
   @media (prefers-reduced-transparency: reduce) {
     .composer, .node-inspector { background: var(--paper); backdrop-filter: none; -webkit-backdrop-filter: none; }
@@ -529,14 +553,16 @@
 
   @media (prefers-reduced-motion: no-preference) {
     .empty-node::after { animation: empty-breathe 2.6s ease-out infinite; }
-    .thinking-lines i { background: linear-gradient(90deg, color-mix(in srgb, var(--green) 9%, transparent), color-mix(in srgb, var(--green-bright) 32%, transparent), color-mix(in srgb, var(--green) 9%, transparent)); background-size: 220% 100%; animation: thinking 1.5s ease-in-out infinite; }
+    .weave-loader i { animation: weave-thinking 900ms ease-in-out infinite alternate; }
+    .weave-loader i:nth-child(2) { animation-delay: 140ms; background: var(--coral); }
+    .weave-loader i:nth-child(3) { animation-delay: 280ms; }
   }
 
   @keyframes node-in { from { opacity: 0; } }
   @keyframes edge-in { from { opacity: 0; stroke-dasharray: 1 12; } }
   @keyframes graph-pulse { from { opacity: .65; transform: translate(-50%, -50%) scale(.35); } to { opacity: 0; transform: translate(-50%, -50%) scale(1.4); } }
   @keyframes empty-breathe { to { opacity: 0; transform: scale(1.7); } }
-  @keyframes thinking { to { background-position: -220% 0; } }
+  @keyframes weave-thinking { to { transform: scaleY(.35); opacity: .45; } }
 
   @media (max-width: 920px) {
     .shell { overflow: auto; }
@@ -606,9 +632,12 @@
     .memory-header dt { display: block; }
     .memory-footer { padding: 8px 16px 13px; }
     .memory-footer span:last-child { display: none; }
-    .message { max-width: 96%; }
-    .message p { font-size: 14px; }
-    .message.user p { padding: 11px 12px; }
+    .message { margin-bottom: 26px; }
+    .message-body { max-width: none; }
+    .message.assistant .message-body { padding-left: 16px; }
+    .message.user .message-body { max-width: 96%; padding: 11px 13px 12px; }
+    .message-content p { font-size: 14.5px; line-height: 1.58; }
+    .message.user .message-content p { font-size: 14px; }
     .node-inspector { left: 12px; bottom: 8px; max-width: calc(100% - 24px); }
   }
 

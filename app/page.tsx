@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, Plus, Trash } from "@phosphor-icons/react";
+import { ArrowUp, Trash } from "@phosphor-icons/react";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { BrandMark } from "./brand-mark";
@@ -185,14 +185,27 @@ export default function Home() {
             <div className="messages" aria-live="polite">
               {messages.map((message) => (
                 <article key={message.id} className={`message ${message.role}`}>
-                  <span>{message.role === "user" ? "You" : "StateWeave"}</span>
-                  <p>{message.content}</p>
+                  <div className="message-body">
+                    <header className="message-meta">
+                      <i className="turn-marker" aria-hidden="true" />
+                      <span>{message.role === "user" ? "You" : "StateWeave"}</span>
+                    </header>
+                    <MessageContent content={message.content} />
+                  </div>
                 </article>
               ))}
               {sending ? (
                 <article className="message assistant pending">
-                  <span>StateWeave</span>
-                  <div className="thinking-lines"><i /><i /><i /></div>
+                  <div className="message-body">
+                    <header className="message-meta">
+                      <i className="turn-marker" aria-hidden="true" />
+                      <span>StateWeave</span>
+                    </header>
+                    <div className="pending-state" role="status">
+                      <span>{activity}</span>
+                      <div className="weave-loader" aria-hidden="true"><i /><i /><i /></div>
+                    </div>
+                  </div>
                 </article>
               ) : null}
               <div ref={messagesEndRef} />
@@ -201,9 +214,9 @@ export default function Home() {
 
           <div className="prompt-area">
             <form className="composer" onSubmit={submit}>
-              <label htmlFor="prompt">Begin anywhere.</label>
+              <label htmlFor="prompt">{hasConversation ? "Continue the thread." : "Begin anywhere."}</label>
               <div className="input-row">
-                <Plus className="prompt-mark" size={18} aria-hidden="true" />
+                <span className="composer-thread" aria-hidden="true" />
                 <textarea
                   id="prompt"
                   ref={inputRef}
@@ -217,7 +230,7 @@ export default function Home() {
                   }}
                   rows={1}
                   maxLength={4_000}
-                  placeholder="Tell us what matters"
+                  placeholder={hasConversation ? "Add what matters next" : "Tell us what matters"}
                   disabled={sending}
                 />
                 <button className="send" type="submit" aria-label="Send prompt" disabled={sending || !prompt.trim()}>
@@ -254,6 +267,15 @@ export default function Home() {
         </aside>
       </section>
     </main>
+  );
+}
+
+function MessageContent({ content }: { content: string }) {
+  const blocks = content.split(/\n{2,}/).filter(Boolean);
+  return (
+    <div className="message-content">
+      {blocks.map((block, index) => <p key={`${index}:${block.slice(0, 24)}`}>{block}</p>)}
+    </div>
   );
 }
 

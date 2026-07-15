@@ -31,7 +31,7 @@ const MAX_VISIBLE_NODES = 110;
 export function GraphView({ graph, active }: { graph: StateGraph; active: boolean }) {
   const [selectedId, setSelectedId] = useState<string>();
   const layout = useMemo(() => buildLayout(graph), [graph]);
-  const selected = layout.nodes.find((node) => node.id === selectedId) ?? layout.nodes.at(-1);
+  const selected = layout.nodes.find((node) => node.id === selectedId);
   const latestIds = new Set(layout.nodes.slice(-7).map((node) => node.id));
 
   if (!layout.nodes.length) {
