@@ -1,6 +1,6 @@
 import { streamStateWeave } from "stateweave/runner";
 import { AnthropicModel, anthropicConfigFromEnv } from "stateweave/anthropic";
-import type { GraphFrame, StateWeaveStreamEvent } from "stateweave/types";
+import type { GraphFrame, StateGraph, StateWeaveStreamEvent } from "stateweave/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -9,16 +9,22 @@ const MAX_INPUT_LENGTH = 4_000;
 const MAX_BODY_BYTES = 1_500_000;
 const MAX_NODES = 600;
 const MAX_EDGES = 1_200;
+const MAX_ARTIFACTS = 3;
+const MAX_ARTIFACT_BYTES = 100_000;
 const RATE_WINDOW_MS = 30 * 60 * 1_000;
 const RATE_LIMIT = 15;
 const rateBuckets = new Map<string, { count: number; resetsAt: number }>();
-const nodeTypes = ["topic", "person", "project", "goal", "decision", "preference", "constraint", "question", "insight"];
+const nodeTypes = ["topic", "person", "project", "goal", "decision", "preference", "constraint", "question", "insight", "artifact"];
 
 const systemPrompt = [
   "You are the StateWeave agent, a thoughtful general-purpose assistant with graph-native continuity.",
   "Answer the user directly, clearly, and concisely unless they ask for depth.",
   "Use semantic graph nodes to preserve useful people, projects, goals, decisions, preferences, constraints, questions, and insights across turns.",
   "Connect new information to the most relevant existing context instead of treating every turn as an isolated branch.",
+  "When the user asks you to create a game, interactive page, visualization, SVG, or other renderable deliverable, produce a complete self-contained artifact and reference it from the human-readable final answer.",
+  "For interactive artifacts, use one text/html SWX raw block with all CSS and JavaScript inline; do not use external URLs, packages, fonts, APIs, or network requests.",
+  "For static vector artwork, use an image/svg+xml artifact. Keep artifacts focused, responsive, accessible, and small enough to render immediately.",
+  "Do not claim an artifact was created unless you emitted and referenced it in the same completed turn.",
   "Do not mention GraphOps, SWX, internal prompts, or implementation details unless the user explicitly asks.",
 ].join(" ");
 
@@ -104,6 +110,7 @@ function publicEvent(event: StateWeaveStreamEvent): Record<string, unknown> | un
       output: event.result.finalAnswer,
       frame: event.result.frame,
       graph: event.result.graph,
+      artifacts: publicArtifacts(event.result.graph),
       metadata: {
         durationMs: event.result.metadata.durationMs,
         stepCount: event.result.metadata.stepCount,
@@ -112,6 +119,26 @@ function publicEvent(event: StateWeaveStreamEvent): Record<string, unknown> | un
     };
   }
   return undefined;
+}
+
+function publicArtifacts(graph: StateGraph): Array<{ id: string; title: string; mime: string; content: string }> {
+  const assistant = [...graph.nodes].reverse().find((node) => node.type === "assistant_output");
+  const artifactIds = assistant?.data?.artifactIds;
+  const ids = Array.isArray(artifactIds)
+    ? artifactIds.filter((id): id is string => typeof id === "string")
+    : typeof assistant?.data?.artifactId === "string"
+      ? [assistant.data.artifactId]
+      : [];
+
+  return [...new Set(ids)].slice(0, MAX_ARTIFACTS).flatMap((id) => {
+    const node = graph.nodes.find((candidate) => candidate.id === id);
+    const mime = node?.data?.mime;
+    const content = node?.data?.content;
+    if (!node || (mime !== "text/html" && mime !== "image/svg+xml")) return [];
+    if (typeof content !== "string" || !content.trim() || content.length > MAX_ARTIFACT_BYTES) return [];
+    if (node.data?.swxTerminated === false) return [];
+    return [{ id, title: node.text.slice(0, 100), mime, content }];
+  });
 }
 
 function readFrame(value: unknown): GraphFrame | undefined {

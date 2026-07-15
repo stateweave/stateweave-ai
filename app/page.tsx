@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, Trash } from "@phosphor-icons/react";
+import { ArrowUp, ArrowsOutSimple, Trash, X } from "@phosphor-icons/react";
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -13,10 +13,18 @@ type GraphFrame = {
   graph: StateGraph;
 };
 
+type Artifact = {
+  id: string;
+  title: string;
+  mime: "text/html" | "image/svg+xml";
+  content: string;
+};
+
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  artifacts?: Artifact[];
 };
 
 type StreamEvent = {
@@ -26,6 +34,7 @@ type StreamEvent = {
   output?: string;
   frame?: GraphFrame;
   graph?: StateGraph;
+  artifacts?: Artifact[];
   message?: string;
   metadata?: { durationMs?: number; stepCount?: number; retryCount?: number };
 };
@@ -51,6 +60,7 @@ export default function Home() {
   const [activity, setActivity] = useState("Ready");
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
+  const [openArtifact, setOpenArtifact] = useState<Artifact>();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -72,6 +82,15 @@ export default function Home() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [messages, sending]);
+
+  useEffect(() => {
+    if (!openArtifact) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenArtifact(undefined);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [openArtifact]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -125,7 +144,12 @@ export default function Home() {
       }
 
       if (!finalEvent?.output || !finalEvent.frame) throw new Error("StateWeave finished without an answer.");
-      const assistantMessage: Message = { id: crypto.randomUUID(), role: "assistant", content: finalEvent.output };
+      const assistantMessage: Message = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: finalEvent.output,
+        artifacts: validArtifacts(finalEvent.artifacts),
+      };
       const nextMessages = [...messages, userMessage, assistantMessage].slice(-80);
       setMessages(nextMessages);
       setFrame(finalEvent.frame);
@@ -148,6 +172,7 @@ export default function Home() {
     setPrompt("");
     setError("");
     setActivity("Ready");
+    setOpenArtifact(undefined);
     localStorage.removeItem(SESSION_KEY);
     inputRef.current?.focus();
   }
@@ -196,6 +221,9 @@ export default function Home() {
                       <span>{message.role === "user" ? "You" : "StateWeave"}</span>
                     </header>
                     <MessageContent content={message.content} markdown={message.role === "assistant"} />
+                    {validArtifacts(message.artifacts).map((artifact) => (
+                      <ArtifactPreview key={artifact.id} artifact={artifact} onOpen={() => setOpenArtifact(artifact)} />
+                    ))}
                   </div>
                 </article>
               ))}
@@ -271,8 +299,66 @@ export default function Home() {
           </footer>
         </aside>
       </section>
+
+      {openArtifact ? (
+        <div className="artifact-modal" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setOpenArtifact(undefined);
+        }}>
+          <section className="artifact-modal-panel" role="dialog" aria-modal="true" aria-label={openArtifact.title}>
+            <header className="artifact-modal-header">
+              <div><span>Browser sandbox</span><strong>{openArtifact.title}</strong></div>
+              <button type="button" onClick={() => setOpenArtifact(undefined)} aria-label="Close artifact"><X size={18} /></button>
+            </header>
+            <iframe
+              sandbox="allow-scripts"
+              referrerPolicy="no-referrer"
+              srcDoc={artifactDocument(openArtifact)}
+              title={`${openArtifact.title} full screen preview`}
+            />
+          </section>
+        </div>
+      ) : null}
     </main>
   );
+}
+
+function ArtifactPreview({ artifact, onOpen }: { artifact: Artifact; onOpen: () => void }) {
+  return (
+    <section className="artifact-preview">
+      <header className="artifact-preview-header">
+        <div><span>Browser sandbox</span><strong>{artifact.title}</strong></div>
+        <button type="button" onClick={onOpen}><ArrowsOutSimple size={16} /> Open</button>
+      </header>
+      <iframe
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        srcDoc={artifactDocument(artifact)}
+        title={`${artifact.title} preview`}
+      />
+    </section>
+  );
+}
+
+function validArtifacts(value: Artifact[] | undefined): Artifact[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((artifact) => artifact
+    && typeof artifact.id === "string"
+    && typeof artifact.title === "string"
+    && (artifact.mime === "text/html" || artifact.mime === "image/svg+xml")
+    && typeof artifact.content === "string"
+    && artifact.content.length <= 100_000);
+}
+
+function artifactDocument(artifact: Artifact): string {
+  const securityHead = [
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">`,
+    `<meta name="referrer" content="no-referrer">`,
+    `<meta name="viewport" content="width=device-width, initial-scale=1">`,
+  ].join("");
+  const source = artifact.content.trim();
+  if (/<head[\s>]/i.test(source)) return source.replace(/<head([^>]*)>/i, `<head$1>${securityHead}`);
+  if (/<html[\s>]/i.test(source)) return source.replace(/<html([^>]*)>/i, `<html$1><head>${securityHead}</head>`);
+  return `<!doctype html><html><head>${securityHead}</head><body>${source}</body></html>`;
 }
 
 function HeroWeave() {
