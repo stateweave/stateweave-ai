@@ -217,7 +217,7 @@ export default function Home() {
                   }}
                   rows={1}
                   maxLength={4_000}
-                  placeholder="Tell StateWeave what matters"
+                  placeholder="Tell us what matters"
                   disabled={sending}
                 />
                 <button className="send" type="submit" aria-label="Send prompt" disabled={sending || !prompt.trim()}>
