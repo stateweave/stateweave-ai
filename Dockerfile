@@ -1,6 +1,17 @@
+FROM node:22-alpine AS sdk
+ARG STATEWEAVE_SDK_REF=68bef8d1d10ffaee2a629a7a65c6f21f1e030cd2
+RUN apk add --no-cache git && corepack enable
+RUN git clone https://github.com/stateweave/sdk-typescript.git /sdk \
+    && cd /sdk \
+    && git checkout "$STATEWEAVE_SDK_REF"
+WORKDIR /sdk
+RUN pnpm install --frozen-lockfile && pnpm build
+
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY vendor/stateweave-package.json ./.stateweave-sdk/package.json
+COPY --from=sdk /sdk/dist ./.stateweave-sdk/dist
 RUN npm ci
 
 FROM node:22-alpine AS builder
