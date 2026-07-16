@@ -2,7 +2,7 @@
 
 import { ArrowUp, ArrowsOutSimple, Trash, X } from "@phosphor-icons/react";
 import Link from "next/link";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useEffectEvent, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { BrandMark } from "./brand-mark";
@@ -48,13 +48,21 @@ type StreamEvent = {
   metadata?: { durationMs?: number; stepCount?: number; retryCount?: number };
 };
 
+type PendingRun = {
+  id: string;
+  input: string;
+  startedAt: number;
+};
+
 type SavedSession = {
   messages: Message[];
   frame?: GraphFrame;
   trace?: TraceItem[];
+  pending?: PendingRun;
 };
 
 const SESSION_KEY = "stateweave-ai-session-v1";
+const RUN_RESTART_WINDOW_MS = 15_000;
 const emptyGraph: StateGraph = { nodes: [], edges: [] };
 const suggestions = [
   "A decision I am making",
@@ -75,25 +83,6 @@ export default function Home() {
   const traceRef = useRef<TraceItem[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const restore = window.setTimeout(() => {
-      try {
-        const saved = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as SavedSession | null;
-        if (saved?.messages && Array.isArray(saved.messages)) setMessages(saved.messages.slice(-80));
-        if (saved?.frame?.graph) setFrame(saved.frame);
-        if (Array.isArray(saved?.trace)) {
-          traceRef.current = saved.trace.slice(-8);
-          setTrace(traceRef.current);
-        }
-      } catch {
-        localStorage.removeItem(SESSION_KEY);
-      } finally {
-        setReady(true);
-      }
-    }, 0);
-    return () => window.clearTimeout(restore);
-  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -124,91 +113,164 @@ export default function Home() {
     const input = prompt.trim();
     if (!input || sending) return;
 
+    const pending = { id: crypto.randomUUID(), input, startedAt: currentTimestamp() } satisfies PendingRun;
     const previousFrame = frame;
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: input };
-    setMessages((current) => [...current, userMessage]);
+    const baseMessages = [...messages, userMessage].slice(-80);
+    traceRef.current = [{ id: "request", label: "Request received", detail: "Opening the current GraphFrame", status: "done" }];
+    setMessages(baseMessages);
     setPrompt("");
     setError("");
     setSending(true);
     setActivity("Opening the graph");
-    traceRef.current = [{ id: "request", label: "Request received", detail: "Opening the current GraphFrame", status: "done" }];
     setTrace(traceRef.current);
+    saveSession({ messages: baseMessages, frame: previousFrame, trace: traceRef.current, pending });
 
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ input, frame }),
+        body: JSON.stringify({ input, frame: previousFrame, runId: pending.id }),
       });
-      if (!response.ok || !response.body) {
-        const payload = await response.json().catch(() => ({})) as { error?: string };
-        throw new Error(payload.error ?? "StateWeave is unavailable.");
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let finalEvent: StreamEvent | undefined;
-
-      while (true) {
-        const { value, done } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const streamEvent = JSON.parse(line) as StreamEvent;
-          if (streamEvent.type === "graph" && streamEvent.frame && streamEvent.graph) {
-            setFrame(streamEvent.frame);
-            const count = `${streamEvent.graph.nodes.length} nodes · ${streamEvent.graph.edges.length} edges`;
-            if (streamEvent.phase === "before") {
-              setActivity("Reading the whole picture");
-              recordTrace({ id: `read-${streamEvent.step ?? 0}`, label: "Read graph", detail: count, status: "done", step: streamEvent.step });
-              recordTrace({ id: `model-${streamEvent.step ?? 0}`, label: "Model call", detail: `Step ${streamEvent.step ?? 1} · preparing GraphOps`, status: "active", step: streamEvent.step });
-            } else {
-              setActivity("Graph updated");
-              recordTrace({ id: `commit-${streamEvent.step ?? 0}`, label: "Committed graph", detail: count, status: "done", step: streamEvent.step });
-            }
-          } else if (streamEvent.type === "activity") {
-            setActivity(activityLabel(streamEvent.phase, streamEvent.step));
-            recordTrace(traceItem(streamEvent));
-          } else if (streamEvent.type === "error") {
-            recordTrace({ id: "failed", label: "Turn stopped", detail: streamEvent.message ?? "The turn could not complete", status: "error" });
-            throw new Error(streamEvent.message ?? "StateWeave could not complete this turn.");
-          } else if (streamEvent.type === "final") {
-            finalEvent = streamEvent;
-          }
-        }
-        if (done) break;
-      }
-
-      if (!finalEvent?.output || !finalEvent.frame) throw new Error("StateWeave finished without an answer.");
-      const assistantMessage: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: finalEvent.output,
-        artifacts: validArtifacts(finalEvent.artifacts),
-      };
-      const nextMessages = [...messages, userMessage, assistantMessage].slice(-80);
-      setMessages(nextMessages);
-      setFrame(finalEvent.frame);
-      setActivity(finalEvent.metadata?.stepCount ? `Woven in ${finalEvent.metadata.stepCount} step${finalEvent.metadata.stepCount === 1 ? "" : "s"}` : "Graph updated");
-      const finalTrace = recordTrace({
-        id: "complete",
-        label: finalEvent.artifacts?.length ? "Artifact rendered" : "Turn complete",
-        detail: runSummary(finalEvent.metadata),
-        status: "done",
-      });
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ messages: nextMessages, frame: finalEvent.frame, trace: finalTrace } satisfies SavedSession));
+      await consumeRun(response, baseMessages, previousFrame, pending);
     } catch (caught) {
-      setFrame(previousFrame);
-      setActivity("Graph unchanged");
-      setError(caught instanceof Error ? caught.message : "StateWeave could not complete this turn.");
+      failRun(caught, baseMessages, previousFrame);
     } finally {
       setSending(false);
       inputRef.current?.focus();
     }
   }
+
+  async function resumeRun(saved: SavedSession) {
+    if (!saved.pending) return;
+    const baseMessages = saved.messages.slice(-80);
+    setSending(true);
+    setError("");
+    setActivity("Reconnecting to the run");
+    recordTrace({ id: "reconnect", label: "Reconnected", detail: "Recovering the active event stream", status: "active" });
+    saveSession({ ...saved, messages: baseMessages, trace: traceRef.current });
+    try {
+      let response = await fetch(`/api/chat?runId=${encodeURIComponent(saved.pending.id)}`, { cache: "no-store" });
+      if (response.status === 404 && saved.pending.input && currentTimestamp() - saved.pending.startedAt <= RUN_RESTART_WINDOW_MS) {
+        response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ input: saved.pending.input, frame: saved.frame, runId: saved.pending.id }),
+        });
+      }
+      await consumeRun(response, baseMessages, saved.frame, saved.pending);
+    } catch (caught) {
+      failRun(caught, baseMessages, saved.frame);
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  }
+
+  async function consumeRun(response: Response, baseMessages: Message[], previousFrame: GraphFrame | undefined, pending: PendingRun) {
+    if (!response.ok || !response.body) {
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(payload.error ?? "StateWeave is unavailable.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let latestFrame = previousFrame;
+    let finalEvent: StreamEvent | undefined;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const streamEvent = JSON.parse(line) as StreamEvent;
+        if (streamEvent.type === "graph" && streamEvent.frame && streamEvent.graph) {
+          latestFrame = streamEvent.frame;
+          setFrame(streamEvent.frame);
+          const count = `${streamEvent.graph.nodes.length} nodes · ${streamEvent.graph.edges.length} edges`;
+          if (streamEvent.phase === "before") {
+            setActivity("Reading the whole picture");
+            recordTrace({ id: `read-${streamEvent.step ?? 0}`, label: "Read graph", detail: count, status: "done", step: streamEvent.step });
+            recordTrace({ id: `model-${streamEvent.step ?? 0}`, label: "Model call", detail: `Step ${streamEvent.step ?? 1} · preparing GraphOps`, status: "active", step: streamEvent.step });
+          } else {
+            setActivity("Graph updated");
+            recordTrace({ id: `commit-${streamEvent.step ?? 0}`, label: "Committed graph", detail: count, status: "done", step: streamEvent.step });
+          }
+        } else if (streamEvent.type === "activity") {
+          setActivity(activityLabel(streamEvent.phase, streamEvent.step));
+          recordTrace(traceItem(streamEvent));
+        } else if (streamEvent.type === "error") {
+          recordTrace({ id: "failed", label: "Turn stopped", detail: streamEvent.message ?? "The turn could not complete", status: "error" });
+          throw new Error(streamEvent.message ?? "StateWeave could not complete this turn.");
+        } else if (streamEvent.type === "final") {
+          finalEvent = streamEvent;
+        }
+        if (streamEvent.type !== "final") saveSession({ messages: baseMessages, frame: latestFrame, trace: traceRef.current, pending });
+      }
+      if (done) break;
+    }
+
+    if (!finalEvent?.output || !finalEvent.frame) throw new Error("StateWeave finished without an answer.");
+    const assistantMessage: Message = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content: finalEvent.output,
+      artifacts: validArtifacts(finalEvent.artifacts),
+    };
+    const nextMessages = [...baseMessages, assistantMessage].slice(-80);
+    setMessages(nextMessages);
+    setFrame(finalEvent.frame);
+    setActivity(finalEvent.metadata?.stepCount ? `Woven in ${finalEvent.metadata.stepCount} step${finalEvent.metadata.stepCount === 1 ? "" : "s"}` : "Graph updated");
+    const finalTrace = recordTrace({
+      id: "complete",
+      label: finalEvent.artifacts?.length ? "Artifact rendered" : "Turn complete",
+      detail: runSummary(finalEvent.metadata),
+      status: "done",
+    });
+    saveSession({ messages: nextMessages, frame: finalEvent.frame, trace: finalTrace });
+  }
+
+  function failRun(caught: unknown, baseMessages: Message[], previousFrame: GraphFrame | undefined) {
+    const message = caught instanceof Error ? caught.message : "StateWeave could not complete this turn.";
+    setMessages(baseMessages);
+    setFrame(previousFrame);
+    setActivity("Run interrupted");
+    setError(message);
+    const failedTrace = recordTrace({ id: "failed", label: "Run interrupted", detail: message, status: "error" });
+    saveSession({ messages: baseMessages, frame: previousFrame, trace: failedTrace });
+  }
+
+  const resumePendingRun = useEffectEvent((saved: SavedSession) => {
+    void resumeRun(saved);
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const restore = window.setTimeout(() => {
+      let saved: SavedSession | null = null;
+      try {
+        saved = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as SavedSession | null;
+        if (saved?.messages && Array.isArray(saved.messages)) setMessages(saved.messages.slice(-80));
+        if (saved?.frame?.graph) setFrame(saved.frame);
+        if (Array.isArray(saved?.trace)) {
+          traceRef.current = saved.trace.slice(-8);
+          setTrace(traceRef.current);
+        }
+      } catch {
+        localStorage.removeItem(SESSION_KEY);
+      } finally {
+        setReady(true);
+      }
+      if (!cancelled && saved?.pending?.id && Array.isArray(saved.messages)) resumePendingRun(saved);
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(restore);
+    };
+  }, []);
 
   function startNewThread() {
     if (sending || (!messages.length && !frame)) return;
@@ -368,6 +430,18 @@ export default function Home() {
       ) : null}
     </main>
   );
+}
+
+function currentTimestamp(): number {
+  return Date.now();
+}
+
+function saveSession(session: SavedSession): void {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // The active UI remains usable even if browser storage is unavailable or full.
+  }
 }
 
 function TraceRail({ items, active }: { items: TraceItem[]; active: boolean }) {

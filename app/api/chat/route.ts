@@ -3,7 +3,7 @@ import { AnthropicModel, anthropicConfigFromEnv } from "stateweave/anthropic";
 import type { GraphFrame, StateGraph, StateWeaveStreamEvent } from "stateweave/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 180;
+export const maxDuration = 240;
 
 const MAX_INPUT_LENGTH = 4_000;
 const MAX_BODY_BYTES = 1_500_000;
@@ -13,8 +13,13 @@ const MAX_ARTIFACTS = 3;
 const MAX_ARTIFACT_BYTES = 100_000;
 const RATE_WINDOW_MS = 30 * 60 * 1_000;
 const RATE_LIMIT = 15;
+const MAX_JOBS = 32;
+const MAX_BUFFERED_EVENTS = 40;
+const JOB_TIMEOUT_MS = 210_000;
+const COMPLETED_JOB_TTL_MS = 5 * 60 * 1_000;
 const rateBuckets = new Map<string, { count: number; resetsAt: number }>();
 const nodeTypes = ["topic", "person", "project", "goal", "decision", "preference", "constraint", "question", "insight", "artifact"];
+const encoder = new TextEncoder();
 
 const systemPrompt = [
   "You are the StateWeave model, a thoughtful general-purpose agent with graph-native continuity.",
@@ -31,13 +36,42 @@ const systemPrompt = [
   "Do not mention GraphOps, SWX, internal prompts, or implementation details unless the user explicitly asks.",
 ].join(" ");
 
+type BufferedEvent = { type: string; line: string };
+type ChatJob = {
+  id: string;
+  status: "running" | "done";
+  createdAt: number;
+  completedAt?: number;
+  events: BufferedEvent[];
+  subscribers: Set<ReadableStreamDefaultController<Uint8Array>>;
+  abort: AbortController;
+  timeout?: ReturnType<typeof setTimeout>;
+};
+
+const jobGlobal = globalThis as typeof globalThis & { __stateweaveChatJobs?: Map<string, ChatJob> };
+const jobs = jobGlobal.__stateweaveChatJobs ??= new Map<string, ChatJob>();
+
 export async function POST(request: Request): Promise<Response> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return Response.json({ error: "The StateWeave model is not configured." }, { status: 503 });
-  }
+  if (!process.env.ANTHROPIC_API_KEY) return Response.json({ error: "The StateWeave model is not configured." }, { status: 503 });
+  cleanupJobs();
 
   const contentLength = Number(request.headers.get("content-length") ?? 0);
   if (contentLength > MAX_BODY_BYTES) return Response.json({ error: "The saved graph is too large. Start a new thread." }, { status: 413 });
+
+  let body: { input?: unknown; frame?: unknown; runId?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body." }, { status: 400 });
+  }
+
+  const requestedRunId = body.runId;
+  if (requestedRunId !== undefined && (typeof requestedRunId !== "string" || !validRunId(requestedRunId))) {
+    return Response.json({ error: "Invalid run id." }, { status: 400 });
+  }
+  const runId = typeof requestedRunId === "string" ? requestedRunId : crypto.randomUUID();
+  const existing = jobs.get(runId);
+  if (existing) return jobResponse(existing);
 
   const allowance = consumeAllowance(clientAddress(request));
   if (!allowance.allowed) {
@@ -47,12 +81,7 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  let body: { input?: unknown; frame?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON body." }, { status: 400 });
-  }
+  if (jobs.size >= MAX_JOBS) return Response.json({ error: "StateWeave is handling too many active runs. Try again shortly." }, { status: 503 });
 
   const input = typeof body.input === "string" ? body.input.trim() : "";
   if (!input) return Response.json({ error: "Write a message first." }, { status: 400 });
@@ -61,36 +90,123 @@ export async function POST(request: Request): Promise<Response> {
   const frame = readFrame(body.frame);
   if (body.frame && !frame) return Response.json({ error: "The saved graph is invalid or too large. Start a new thread." }, { status: 400 });
 
+  const job: ChatJob = {
+    id: runId,
+    status: "running",
+    createdAt: Date.now(),
+    events: [],
+    subscribers: new Set(),
+    abort: new AbortController(),
+  };
+  jobs.set(runId, job);
   const model = new AnthropicModel(anthropicConfigFromEnv(process.env));
+  startJob(job, model, input, frame);
+  return jobResponse(job);
+}
 
-  const encoder = new TextEncoder();
+export async function GET(request: Request): Promise<Response> {
+  cleanupJobs();
+  const runId = new URL(request.url).searchParams.get("runId");
+  if (!runId || !validRunId(runId)) return Response.json({ error: "Invalid run id." }, { status: 400 });
+  const job = jobs.get(runId);
+  if (!job) return Response.json({ error: "That run is no longer available. Your message is still saved; send it again to retry." }, { status: 404 });
+  return jobResponse(job);
+}
+
+function startJob(job: ChatJob, model: AnthropicModel, input: string, frame: GraphFrame | undefined): void {
+  job.timeout = setTimeout(() => job.abort.abort(), JOB_TIMEOUT_MS);
+  void (async () => {
+    try {
+      for await (const event of streamStateWeave(
+        { model, tools: [], maxIterations: 12, systemPrompt, nodeTypes, traceMode: "compact" },
+        input,
+        { frame, signal: job.abort.signal },
+      )) {
+        const payload = publicEvent(event);
+        if (payload) publish(job, payload);
+      }
+    } catch (error) {
+      publish(job, { type: "error", message: safeError(error) });
+    } finally {
+      finishJob(job);
+    }
+  })();
+}
+
+function publish(job: ChatJob, payload: Record<string, unknown>): void {
+  const type = typeof payload.type === "string" ? payload.type : "event";
+  if (type === "graph") job.events = job.events.filter((event) => event.type !== "graph");
+  const line = `${JSON.stringify(payload)}\n`;
+  job.events.push({ type, line });
+  if (job.events.length > MAX_BUFFERED_EVENTS) job.events.splice(0, job.events.length - MAX_BUFFERED_EVENTS);
+  const bytes = encoder.encode(line);
+  for (const subscriber of [...job.subscribers]) {
+    try {
+      subscriber.enqueue(bytes);
+    } catch {
+      job.subscribers.delete(subscriber);
+    }
+  }
+}
+
+function finishJob(job: ChatJob): void {
+  if (job.timeout) clearTimeout(job.timeout);
+  job.status = "done";
+  job.completedAt = Date.now();
+  for (const subscriber of [...job.subscribers]) {
+    try {
+      subscriber.close();
+    } catch {
+      // The browser disconnected between the final event and stream close.
+    }
+  }
+  job.subscribers.clear();
+}
+
+function jobResponse(job: ChatJob): Response {
+  let subscriber: ReadableStreamDefaultController<Uint8Array> | undefined;
   const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const send = (payload: Record<string, unknown>) => controller.enqueue(encoder.encode(`${JSON.stringify(payload)}\n`));
-      try {
-        for await (const event of streamStateWeave(
-          { model, tools: [], maxIterations: 12, systemPrompt, nodeTypes, traceMode: "compact" },
-          input,
-          { frame, signal: request.signal },
-        )) {
-          const payload = publicEvent(event);
-          if (payload) send(payload);
-        }
-      } catch (error) {
-        send({ type: "error", message: safeError(error) });
-      } finally {
-        controller.close();
+    start(controller) {
+      for (const event of job.events) controller.enqueue(encoder.encode(event.line));
+      if (job.status === "done") controller.close();
+      else {
+        subscriber = controller;
+        job.subscribers.add(controller);
       }
     },
+    cancel() {
+      if (subscriber) job.subscribers.delete(subscriber);
+    },
   });
-
   return new Response(stream, {
     headers: {
       "content-type": "application/x-ndjson; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
+      "cache-control": "no-cache, no-store, no-transform",
       "x-accel-buffering": "no",
+      "x-stateweave-run-id": job.id,
     },
   });
+}
+
+function cleanupJobs(): void {
+  const now = Date.now();
+  for (const [id, job] of jobs) {
+    if (job.status === "done" && job.completedAt && now - job.completedAt > COMPLETED_JOB_TTL_MS) jobs.delete(id);
+    else if (job.status === "running" && now - job.createdAt > JOB_TIMEOUT_MS + 5_000) {
+      job.abort.abort();
+      jobs.delete(id);
+    }
+  }
+  if (jobs.size < MAX_JOBS) return;
+  const completed = [...jobs.values()].filter((job) => job.status === "done").sort((a, b) => (a.completedAt ?? 0) - (b.completedAt ?? 0));
+  for (const job of completed) {
+    jobs.delete(job.id);
+    if (jobs.size < MAX_JOBS) break;
+  }
+}
+
+function validRunId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function publicEvent(event: StateWeaveStreamEvent): Record<string, unknown> | undefined {
@@ -201,7 +317,7 @@ function clientAddress(request: Request): string {
 
 function safeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (/abort/i.test(message)) return "The request was cancelled.";
+  if (/abort/i.test(message)) return "The run timed out before it could finish.";
   if (/recursion|iteration/i.test(message)) return "StateWeave needed more reasoning steps. Try a narrower request.";
   if (/rate|overload|timeout|fetch/i.test(message)) return "The model is temporarily unavailable. Please try again.";
   return "StateWeave could not complete that turn. Your graph is unchanged.";

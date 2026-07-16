@@ -8,7 +8,7 @@ The interface runs the real [`stateweave/sdk-typescript`](https://github.com/sta
 StateGraph -> GraphFrame -> GraphOps -> StateGraph
 ```
 
-The graph visualization updates as validated GraphOps are applied. Conversation, graph state, and generated artifacts remain in browser storage for this MVP. The server does not persist chat history.
+The graph visualization updates as validated GraphOps are applied. Conversation, graph state, and generated artifacts remain in browser storage for this MVP. The server does not persist chat history. Active runs use a bounded, five-minute in-memory event buffer keyed by an unguessable run id so a browser refresh can reconnect without cancelling or duplicating the model call; this buffer is transient and never written to disk.
 
 Self-contained HTML and SVG artifacts are returned as graph-referenced outputs and rendered in a browser iframe with an opaque sandbox origin, no parent-page access, a restrictive Content Security Policy, and no ordinary fetch/connect access. The commercial runtime does not expose filesystem or shell tools.
 
