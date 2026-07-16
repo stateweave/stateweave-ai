@@ -134,7 +134,8 @@ export default function Home() {
       });
       await consumeRun(response, baseMessages, previousFrame, pending);
     } catch (caught) {
-      failRun(caught, baseMessages, previousFrame);
+      if (isTransportError(caught)) pauseRun(baseMessages, previousFrame, pending);
+      else failRun(caught, baseMessages, previousFrame);
     } finally {
       setSending(false);
       inputRef.current?.focus();
@@ -160,7 +161,8 @@ export default function Home() {
       }
       await consumeRun(response, baseMessages, saved.frame, saved.pending);
     } catch (caught) {
-      failRun(caught, baseMessages, saved.frame);
+      if (isTransportError(caught)) pauseRun(baseMessages, saved.frame, saved.pending);
+      else failRun(caught, baseMessages, saved.frame);
     } finally {
       setSending(false);
       inputRef.current?.focus();
@@ -231,6 +233,15 @@ export default function Home() {
       status: "done",
     });
     saveSession({ messages: nextMessages, frame: finalEvent.frame, trace: finalTrace });
+  }
+
+  function pauseRun(baseMessages: Message[], previousFrame: GraphFrame | undefined, pending: PendingRun) {
+    const stored = readSession();
+    const pausedTrace = recordTrace({ id: "reconnect", label: "Connection paused", detail: "Refresh to reconnect to the active run", status: "retrying" });
+    setMessages(baseMessages);
+    setActivity("Connection paused");
+    setError("The connection was interrupted. Refresh to reconnect to the active run.");
+    saveSession({ messages: baseMessages, frame: stored?.frame ?? previousFrame, trace: pausedTrace, pending });
   }
 
   function failRun(caught: unknown, baseMessages: Message[], previousFrame: GraphFrame | undefined) {
@@ -430,6 +441,19 @@ export default function Home() {
       ) : null}
     </main>
   );
+}
+
+function isTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return error instanceof TypeError || /network error|failed to fetch|load failed|body stream|aborted|terminated/i.test(message);
+}
+
+function readSession(): SavedSession | null {
+  try {
+    return JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as SavedSession | null;
+  } catch {
+    return null;
+  }
 }
 
 function currentTimestamp(): number {
