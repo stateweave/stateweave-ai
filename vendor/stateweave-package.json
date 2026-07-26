@@ -8,18 +8,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./runner": {
-      "types": "./dist/agent/stateweaveRunner.d.ts",
-      "import": "./dist/agent/stateweaveRunner.js"
-    },
-    "./anthropic": {
-      "types": "./dist/llm/anthropicModel.d.ts",
-      "import": "./dist/llm/anthropicModel.js"
-    },
-    "./types": {
-      "types": "./dist/core/types.d.ts",
-      "import": "./dist/core/types.js"
     }
   },
   "dependencies": {

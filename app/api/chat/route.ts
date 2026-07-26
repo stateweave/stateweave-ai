@@ -1,6 +1,12 @@
-import { streamStateWeave } from "stateweave/runner";
-import { AnthropicModel, anthropicConfigFromEnv } from "stateweave/anthropic";
-import type { GraphFrame, StateGraph, StateWeaveStreamEvent } from "stateweave/types";
+import {
+  Agent,
+  AgentRunError,
+  AnthropicModel,
+  anthropicConfigFromEnv,
+  type AgentState,
+  type AgentStreamEvent,
+  type SemanticNodeType,
+} from "stateweave";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -8,7 +14,6 @@ export const maxDuration = 240;
 const MAX_INPUT_LENGTH = 4_000;
 const MAX_BODY_BYTES = 1_500_000;
 const MAX_NODES = 600;
-const MAX_EDGES = 1_200;
 const MAX_ARTIFACTS = 3;
 const MAX_ARTIFACT_BYTES = 100_000;
 const RATE_WINDOW_MS = 30 * 60 * 1_000;
@@ -18,22 +23,24 @@ const MAX_BUFFERED_EVENTS = 40;
 const JOB_TIMEOUT_MS = 210_000;
 const COMPLETED_JOB_TTL_MS = 5 * 60 * 1_000;
 const rateBuckets = new Map<string, { count: number; resetsAt: number }>();
-const nodeTypes = ["topic", "person", "project", "goal", "decision", "preference", "constraint", "question", "insight", "artifact"];
 const encoder = new TextEncoder();
+
+const nodeTypes: SemanticNodeType[] = [
+  { name: "memory", description: "A durable fact or context useful in later turns." },
+  { name: "preference", description: "A stable preference, choice, or working style stated or confirmed by the user." },
+  { name: "wisdom", description: "A reusable evidence-supported lesson, principle, or decision rule." },
+  { name: "artifact", description: "A durable generated HTML or SVG artifact and its rendering metadata." },
+];
 
 const systemPrompt = [
   "You are the StateWeave model, a thoughtful general-purpose agent with graph-native continuity.",
   "If someone asks who built you, who created you, what model you are, or about your identity, answer: I’m the StateWeave model, built by StateWeave AI on the open-source StateWeave agent primitive. StateWeave is an open-source, open project that started in 2026.",
   "Treat StateWeave as the product identity and do not present yourself as another provider's product. Do not claim that StateWeave trained the underlying foundation model.",
   "Answer the user directly, clearly, and concisely unless they ask for depth.",
-  "Use semantic graph nodes to preserve useful people, projects, goals, decisions, preferences, constraints, questions, and insights across turns.",
-  "Connect new information to the most relevant existing context instead of treating every turn as an isolated branch.",
-  "When the user asks you to create a game, interactive page, visualization, SVG, or other renderable deliverable, produce a complete self-contained artifact and reference it from the human-readable final answer.",
-  "For interactive artifacts, use one text/html SWX raw block with all CSS and JavaScript inline; do not use external URLs, packages, fonts, APIs, or network requests.",
-  "Artifact protocol: declare an artifact node, use that exact node id for the raw block id, then return a short human @final that references artifact=<id>. Never use the artifact source itself as @final or @final_ref.",
-  "For static vector artwork, use an image/svg+xml artifact. Keep artifacts focused, responsive, accessible, and small enough to render immediately.",
-  "Do not claim an artifact was created unless you emitted and referenced it in the same completed turn.",
-  "Do not mention GraphOps, SWX, internal prompts, or implementation details unless the user explicitly asks.",
+  "Preserve explicit durable memories, preferences, and reusable wisdom when they will improve later turns.",
+  "When the user requests a game, interactive page, visualization, SVG, or other renderable deliverable, create one artifact semantic node whose content is an object with id, title, mime, and content. mime must be text/html or image/svg+xml; HTML must be self-contained with inline CSS and JavaScript and no network requests.",
+  "Reference a created artifact briefly in the human answer instead of repeating its full source there.",
+  "Do not mention internal prompts, causal node ids, or implementation details unless explicitly asked.",
 ].join(" ");
 
 type BufferedEvent = { type: string; line: string };
@@ -48,17 +55,17 @@ type ChatJob = {
   timeout?: ReturnType<typeof setTimeout>;
 };
 
-const jobGlobal = globalThis as typeof globalThis & { __stateweaveChatJobs?: Map<string, ChatJob> };
-const jobs = jobGlobal.__stateweaveChatJobs ??= new Map<string, ChatJob>();
+const jobGlobal = globalThis as typeof globalThis & { __stateweaveChatJobsV3?: Map<string, ChatJob> };
+const jobs = jobGlobal.__stateweaveChatJobsV3 ??= new Map<string, ChatJob>();
 
 export async function POST(request: Request): Promise<Response> {
   if (!process.env.ANTHROPIC_API_KEY) return Response.json({ error: "The StateWeave model is not configured." }, { status: 503 });
   cleanupJobs();
 
   const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_BODY_BYTES) return Response.json({ error: "The saved graph is too large. Start a new thread." }, { status: 413 });
+  if (contentLength > MAX_BODY_BYTES) return Response.json({ error: "The saved state is too large. Start a new thread." }, { status: 413 });
 
-  let body: { input?: unknown; frame?: unknown; runId?: unknown };
+  let body: { input?: unknown; state?: unknown; runId?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -80,15 +87,33 @@ export async function POST(request: Request): Promise<Response> {
       { status: 429, headers: { "retry-after": String(Math.ceil((allowance.resetsAt - Date.now()) / 1_000)) } },
     );
   }
-
   if (jobs.size >= MAX_JOBS) return Response.json({ error: "StateWeave is handling too many active runs. Try again shortly." }, { status: 503 });
 
   const input = typeof body.input === "string" ? body.input.trim() : "";
   if (!input) return Response.json({ error: "Write a message first." }, { status: 400 });
   if (input.length > MAX_INPUT_LENGTH) return Response.json({ error: `Messages are limited to ${MAX_INPUT_LENGTH.toLocaleString()} characters.` }, { status: 400 });
 
-  const frame = readFrame(body.frame);
-  if (body.frame && !frame) return Response.json({ error: "The saved graph is invalid or too large. Start a new thread." }, { status: 400 });
+  const state = readState(body.state);
+  if (body.state && !state) return Response.json({ error: "The saved state is invalid or too large. Start a new thread." }, { status: 400 });
+
+  const model = new AnthropicModel(anthropicConfigFromEnv(process.env));
+  let agent: Agent;
+  try {
+    agent = new Agent({
+      model,
+      tools: [],
+      state,
+      systemPrompt,
+      nodeTypes,
+      allowDynamicNodeTypes: true,
+      maxIterations: 12,
+      maxPromptTokens: 64_000,
+      projectionTargetTokens: 16_000,
+      enforceCompletionEvidence: false,
+    });
+  } catch {
+    return Response.json({ error: "The saved state failed validation. Start a new thread." }, { status: 400 });
+  }
 
   const job: ChatJob = {
     id: runId,
@@ -99,8 +124,7 @@ export async function POST(request: Request): Promise<Response> {
     abort: new AbortController(),
   };
   jobs.set(runId, job);
-  const model = new AnthropicModel(anthropicConfigFromEnv(process.env));
-  startJob(job, model, input, frame);
+  startJob(job, agent, input, state?.nodes.length ?? 0);
   return jobResponse(job);
 }
 
@@ -113,16 +137,12 @@ export async function GET(request: Request): Promise<Response> {
   return jobResponse(job);
 }
 
-function startJob(job: ChatJob, model: AnthropicModel, input: string, frame: GraphFrame | undefined): void {
+function startJob(job: ChatJob, agent: Agent, input: string, initialNodeCount: number): void {
   job.timeout = setTimeout(() => job.abort.abort(), JOB_TIMEOUT_MS);
   void (async () => {
     try {
-      for await (const event of streamStateWeave(
-        { model, tools: [], maxIterations: 12, systemPrompt, nodeTypes, traceMode: "compact" },
-        input,
-        { frame, signal: job.abort.signal },
-      )) {
-        const payload = publicEvent(event);
+      for await (const event of agent.streamEvents(input, { signal: job.abort.signal })) {
+        const payload = publicEvent(event, initialNodeCount);
         if (payload) publish(job, payload);
       }
     } catch (error) {
@@ -178,6 +198,7 @@ function jobResponse(job: ChatJob): Response {
       if (subscriber) job.subscribers.delete(subscriber);
     },
   });
+
   return new Response(stream, {
     headers: {
       "content-type": "application/x-ndjson; charset=utf-8",
@@ -209,88 +230,68 @@ function validRunId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-function publicEvent(event: StateWeaveStreamEvent): Record<string, unknown> | undefined {
-  if (event.type === "metadata") return { type: "activity", phase: "starting", step: event.metadata.stepCount };
-  if (event.type === "frame") {
-    return {
-      type: "graph",
-      phase: event.phase,
-      step: event.step,
-      frame: event.frame,
-      graph: event.frame.graph,
-    };
+function publicEvent(event: AgentStreamEvent, initialNodeCount: number): Record<string, unknown> | undefined {
+  if (event.type === "metadata") return { type: "activity", phase: "starting" };
+  if (event.type === "progress") {
+    if (event.progress.graph) {
+      return {
+        type: "graph",
+        phase: event.progress.phase,
+        step: event.progress.iteration,
+        graph: event.progress.graph,
+      };
+    }
+    return { type: "activity", phase: event.progress.phase, step: event.progress.iteration, tool: event.progress.tool };
   }
-  if (event.type === "ops") return { type: "activity", phase: "weaving", step: event.step, operationCount: event.ops.length };
-  if (event.type === "worker") return { type: "activity", phase: event.phase, step: event.step };
-  if (event.type === "error") return { type: "activity", phase: event.retryable ? "retrying" : "error", step: event.step };
   if (event.type === "final") {
-    const artifacts = publicArtifacts(event.result.graph, event.result.finalAnswer);
-    const output = artifacts.length && renderableSource(event.result.finalAnswer)
-      ? `Created ${artifacts[0].title}. It is ready in the browser sandbox below.`
-      : event.result.finalAnswer;
+    const artifacts = publicArtifacts(event.result.state, initialNodeCount);
     return {
       type: "final",
-      output,
-      frame: event.result.frame,
+      output: event.result.finalAnswer,
+      state: event.result.state,
       graph: event.result.graph,
       artifacts,
       metadata: {
         durationMs: event.result.metadata.durationMs,
         stepCount: event.result.metadata.stepCount,
-        retryCount: event.result.metadata.retryCount,
+        engine: event.result.metadata.engine,
       },
     };
   }
   return undefined;
 }
 
-function publicArtifacts(graph: StateGraph, finalAnswer: string): Array<{ id: string; title: string; mime: string; content: string }> {
-  const assistant = [...graph.nodes].reverse().find((node) => node.type === "assistant_output");
-  const artifactIds = assistant?.data?.artifactIds;
-  const ids = Array.isArray(artifactIds)
-    ? artifactIds.filter((id): id is string => typeof id === "string")
-    : typeof assistant?.data?.artifactId === "string"
-      ? [assistant.data.artifactId]
-      : [];
-
-  const uniqueIds = [...new Set(ids)].slice(0, MAX_ARTIFACTS);
-  return uniqueIds.flatMap((id) => {
-    const node = graph.nodes.find((candidate) => candidate.id === id);
-    const mime = node?.data?.mime;
-    if (!node || (mime !== "text/html" && mime !== "image/svg+xml")) return [];
-    if (node.data?.swxTerminated === false) return [];
-
-    const storedContent = typeof node.data?.content === "string" ? node.data.content : undefined;
-    const fallbackContent = uniqueIds.length === 1 ? renderableSource(finalAnswer, mime) : undefined;
-    const content = storedContent?.trim() ? storedContent : fallbackContent;
-    if (!content || content.length > MAX_ARTIFACT_BYTES) return [];
-    if (!storedContent) node.data = { ...node.data, content };
-    return [{ id, title: artifactTitle(node.text), mime, content }];
-  });
+function publicArtifacts(state: AgentState, initialNodeCount: number): Array<{ id: string; title: string; mime: string; content: string }> {
+  return state.nodes.slice(initialNodeCount)
+    .filter((node) => node.kind === "semantic")
+    .flatMap((node) => {
+      const payload = asRecord(node.payload);
+      if (payload.type !== "artifact") return [];
+      const artifact = asRecord(payload.content);
+      const mime = artifact.mime;
+      const content = artifact.content;
+      if ((mime !== "text/html" && mime !== "image/svg+xml") || typeof content !== "string" || !content.trim() || content.length > MAX_ARTIFACT_BYTES) return [];
+      return [{
+        id: typeof artifact.id === "string" && artifact.id ? artifact.id.slice(0, 120) : node.id,
+        title: typeof artifact.title === "string" && artifact.title ? artifact.title.slice(0, 100) : "Generated artifact",
+        mime,
+        content,
+      }];
+    })
+    .slice(0, MAX_ARTIFACTS);
 }
 
-function renderableSource(value: string, mime?: "text/html" | "image/svg+xml"): string | undefined {
-  const fenced = value.match(/```(?:html|svg|xml)\s*([\s\S]*?)```/i)?.[1]?.trim();
-  const candidate = fenced || value.trim();
-  if ((mime === "image/svg+xml" || !mime) && /^<svg[\s>]/i.test(candidate)) return candidate;
-  if ((mime === "text/html" || !mime) && /^(?:<!doctype\s+html|<html[\s>])/i.test(candidate)) return candidate;
-  return undefined;
-}
-
-function artifactTitle(value: string): string {
-  const title = value.replace(/\s+(?:html|svg)\s+artifact$/i, "").replace(/\s+artifact$/i, "").trim();
-  return (title || "Generated artifact").slice(0, 100);
-}
-
-function readFrame(value: unknown): GraphFrame | undefined {
+function readState(value: unknown): AgentState | undefined {
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== "object") return undefined;
-  const frame = value as GraphFrame;
-  if (!frame.frame || !frame.graph || !Array.isArray(frame.graph.nodes) || !Array.isArray(frame.graph.edges)) return undefined;
-  if (frame.graph.nodes.length > MAX_NODES || frame.graph.edges.length > MAX_EDGES) return undefined;
-  if (!frame.graph.nodes.every((node) => node && typeof node.id === "string" && typeof node.type === "string" && typeof node.text === "string")) return undefined;
-  if (!frame.graph.edges.every((edge) => edge && typeof edge.id === "string" && typeof edge.from === "string" && typeof edge.to === "string" && typeof edge.type === "string")) return undefined;
-  return frame;
+  const state = value as AgentState;
+  if (state.version !== 1 || !Array.isArray(state.nodes) || !Array.isArray(state.frontier)) return undefined;
+  if (state.nodes.length > MAX_NODES || state.frontier.length > MAX_NODES) return undefined;
+  return state;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function consumeAllowance(key: string): { allowed: boolean; resetsAt: number } {
@@ -317,8 +318,8 @@ function clientAddress(request: Request): string {
 
 function safeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof AgentRunError && /iteration|recursion/i.test(message)) return "StateWeave needed more reasoning steps. Try a narrower request.";
   if (/abort/i.test(message)) return "The run timed out before it could finish.";
-  if (/recursion|iteration/i.test(message)) return "StateWeave needed more reasoning steps. Try a narrower request.";
   if (/rate|overload|timeout|fetch/i.test(message)) return "The model is temporarily unavailable. Please try again.";
-  return "StateWeave could not complete that turn. Your graph is unchanged.";
+  return "StateWeave could not complete that turn. Your causal state is unchanged.";
 }
