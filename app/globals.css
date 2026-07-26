@@ -1074,6 +1074,17 @@
     .node-inspector { left: 12px; bottom: 8px; max-width: calc(100% - 24px); }
   }
 
+  @media (max-height: 600px) and (min-width: 601px) and (max-width: 920px) {
+    .has-conversation .memory-panel.is-open { height: 148px; }
+    .has-conversation .memory-panel.is-open .memory-details { grid-template-rows: minmax(0, 1fr); }
+    .has-conversation .memory-panel.is-open .trace-rail { display: none; }
+    .has-conversation .messages { padding-top: 6px; }
+    .message { margin-bottom: 12px; }
+    .message-meta { margin-bottom: 4px; }
+    .message-content p { line-height: 1.4; }
+    .has-conversation .prompt-area { padding-top: 4px; }
+  }
+
   @media (max-width: 380px) {
     .wordmark { gap: 8px; font-size: 15px; }
     .mark { width: 19px; height: 19px; }
