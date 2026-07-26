@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, ArrowsOutSimple, Trash, X } from "@phosphor-icons/react";
+import { ArrowUp, ArrowsOutSimple, CaretDown, Trash, X } from "@phosphor-icons/react";
 import Link from "next/link";
 import { FormEvent, useEffect, useEffectEvent, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -86,6 +86,7 @@ export default function Home() {
   const [ready, setReady] = useState(false);
   const [openArtifact, setOpenArtifact] = useState<Artifact>();
   const [trace, setTrace] = useState<TraceItem[]>([]);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const traceRef = useRef<TraceItem[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -126,6 +127,7 @@ export default function Home() {
     traceRef.current = [{ id: "request", label: "Request received", detail: "Opening the current causal state", status: "done" }];
     setMessages(baseMessages);
     setPrompt("");
+    if (inputRef.current) inputRef.current.style.height = "";
     setError("");
     setSending(true);
     setActivity("Opening the graph");
@@ -298,6 +300,7 @@ export default function Home() {
     setError("");
     setActivity("Ready");
     setOpenArtifact(undefined);
+    setMemoryOpen(false);
     traceRef.current = [];
     setTrace([]);
     localStorage.removeItem(SESSION_KEY);
@@ -381,7 +384,11 @@ export default function Home() {
                   id="prompt"
                   ref={inputRef}
                   value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
+                  onChange={(event) => {
+                    setPrompt(event.target.value);
+                    event.currentTarget.style.height = "0px";
+                    event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 130)}px`;
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
@@ -408,23 +415,37 @@ export default function Home() {
           </div>
         </div>
 
-        <aside className="memory-panel" aria-label="Live StateWeave graph">
+        <aside className={`memory-panel ${memoryOpen ? "is-open" : ""}`} aria-label="Live StateWeave graph">
           <header className="memory-header">
             <div>
               <p>Living memory</p>
               <span>{activity}</span>
             </div>
-            <dl>
-              <div><dt>Nodes</dt><dd>{graph.nodes.length}</dd></div>
-              <div><dt>Edges</dt><dd>{graph.edges.length}</dd></div>
-            </dl>
+            <div className="memory-header-actions">
+              <dl>
+                <div><dt>Nodes</dt><dd>{graph.nodes.length}</dd></div>
+                <div><dt>Edges</dt><dd>{graph.edges.length}</dd></div>
+              </dl>
+              <button
+                className="memory-toggle"
+                type="button"
+                aria-expanded={memoryOpen}
+                aria-controls="memory-details"
+                aria-label={memoryOpen ? "Hide memory map" : "Show memory map"}
+                onClick={() => setMemoryOpen((open) => !open)}
+              >
+                <CaretDown size={18} weight="bold" />
+              </button>
+            </div>
           </header>
-          <TraceRail items={trace} active={sending} />
-          <GraphView graph={graph} active={sending} />
-          <footer className="memory-footer">
-            <span>StateGraph</span>
-            <span>Causal graph → bounded context → causal graph</span>
-          </footer>
+          <div className="memory-details" id="memory-details">
+            <TraceRail items={trace} active={sending} />
+            <GraphView graph={graph} active={sending} />
+            <footer className="memory-footer">
+              <span>StateGraph</span>
+              <span>Causal graph → bounded context → causal graph</span>
+            </footer>
+          </div>
         </aside>
       </section>
 

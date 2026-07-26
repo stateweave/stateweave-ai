@@ -59,7 +59,7 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
   const latestIds = new Set(layout.nodes.slice(-7).map((node) => node.id));
 
   useEffect(() => {
-    if (!layout.nodes.length) return;
+    if (!layout.nodes.length || !svgRef.current) return;
     let animationFrame = 0;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const animate = () => {
@@ -73,8 +73,18 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
       updateGraphDom(layout, nodeElements.current, edgeElements.current);
       animationFrame = window.requestAnimationFrame(animate);
     };
-    animationFrame = window.requestAnimationFrame(animate);
-    return () => window.cancelAnimationFrame(animationFrame);
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting && !animationFrame) animationFrame = window.requestAnimationFrame(animate);
+      if (!entry?.isIntersecting && animationFrame) {
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = 0;
+      }
+    });
+    observer.observe(svgRef.current);
+    return () => {
+      observer.disconnect();
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+    };
   }, [layout, positionStore]);
 
   if (!layout.nodes.length) {
@@ -192,6 +202,7 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
                   if (event.key === "Escape") releaseNode(node);
                 }}
               >
+                <circle r={Math.max(node.radius + 24, 36)} className="node-hit" />
                 <circle r={node.radius + (selectedNode ? 5 : 0)} className="node-halo" />
                 <circle r={node.radius} className="node-core" />
                 {label ? (

@@ -458,7 +458,7 @@
     border: 1px solid var(--line);
     border-radius: 20px;
     display: grid;
-    grid-template-rows: auto auto 1fr auto;
+    grid-template-rows: auto minmax(0, 1fr);
     background: var(--panel);
     box-shadow: 0 35px 90px -50px var(--shadow), inset 0 1px 0 color-mix(in srgb, var(--ink) 6%, transparent);
   }
@@ -475,10 +475,29 @@
   .memory-header p { margin: 0 0 3px; font-size: 13px; font-weight: 650; }
   .memory-header > div > span { color: var(--muted); font-family: var(--font-mono), monospace; font-size: 10px; }
 
+  .memory-header-actions { display: flex; align-items: center; gap: 12px; }
   .memory-header dl { display: flex; gap: 18px; margin: 0; }
   .memory-header dl div { display: grid; grid-template-columns: auto auto; align-items: baseline; gap: 6px; }
   .memory-header dt { color: var(--muted); font-family: var(--font-mono), monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
   .memory-header dd { margin: 0; font-family: var(--font-mono), monospace; font-size: 13px; font-weight: 650; }
+  .memory-toggle {
+    display: none;
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 12px;
+    place-items: center;
+    color: var(--green-deep);
+    background: color-mix(in srgb, var(--paper) 48%, transparent);
+  }
+  .memory-toggle:active { transform: scale(.96); }
+  .memory-details {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
 
   .graph-empty {
     display: grid;
@@ -571,6 +590,7 @@
   .trace-rail .trace-error { border-color: var(--danger); }
 
   .graph-visual { position: relative; min-height: 0; overflow: hidden; }
+  .node-hit { fill: transparent; stroke: none; }
   .graph-visual svg { width: 100%; height: 100%; min-height: 380px; overflow: visible; touch-action: none; }
   .graph-help {
     position: absolute;
@@ -954,7 +974,7 @@
     .graph-visual svg { min-height: 250px; }
   }
 
-  @media (max-width: 600px) {
+  @media (max-width: 600px), (max-height: 600px) and (max-width: 920px) {
     .hero-warps { top: 64px; right: 28px; left: 63vw; }
     .hero-warps i { width: 5px; background: color-mix(in srgb, var(--green-deep) 14%, transparent); }
     .hero-warps i:nth-child(even) { display: none; }
@@ -991,29 +1011,61 @@
     .suggestions { padding-bottom: 3px; scrollbar-width: none; }
     .suggestions::-webkit-scrollbar { display: none; }
     .suggestions button { flex: 0 0 auto; }
+    .is-chatting .primitive-link { display: none; }
     .has-conversation.agent-stage {
-      height: calc(100dvh - 64px);
+      height: calc(100dvh - 64px - env(safe-area-inset-bottom, 0px));
       min-height: 0;
-      grid-template-rows: clamp(220px, 36dvh, 300px) minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 8px;
       overflow: hidden;
     }
-    .has-conversation .memory-panel { min-height: 0; height: auto; }
+    .has-conversation .memory-panel {
+      min-height: 0;
+      height: 58px;
+      border-radius: 15px;
+      transition: height 240ms cubic-bezier(.16, 1, .3, 1);
+    }
+    .has-conversation .memory-panel.is-open { height: clamp(230px, 34dvh, 300px); }
+    .has-conversation .memory-details { display: none; }
+    .has-conversation .memory-panel.is-open .memory-details { display: grid; }
     .has-conversation .conversation-panel { min-height: 0; height: auto; overflow: hidden; }
-    .has-conversation .messages { max-height: none; min-height: 0; padding-inline: 0; }
-    .memory-header { padding: 14px 16px 3px; }
-    .trace-rail { padding: 1px 16px 7px; }
-    .trace-rail > header { margin-bottom: 4px; }
-    .trace-rail li { min-width: 132px; padding-block: 4px; }
-    .graph-help { top: 4px; right: 10px; font-size: 7px; }
-    .memory-header dl { gap: 10px; }
-    .memory-header dl div { display: block; text-align: right; }
-    .memory-header dt { display: block; }
-    .memory-footer { padding: 8px 16px 13px; }
-    .memory-footer span:last-child { display: none; }
-    .message { margin-bottom: 26px; }
+    .has-conversation .messages {
+      max-height: none;
+      min-height: 0;
+      padding: 14px 2px 8px;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+    }
+    .has-conversation .prompt-area {
+      margin-top: 0;
+      padding: 7px 0 max(10px, env(safe-area-inset-bottom, 0px));
+    }
+    .has-conversation .composer { border-radius: 14px; padding: 10px; }
+    .has-conversation .composer label { padding: 2px 6px 7px; font-size: 12px; }
+    .memory-header { min-height: 56px; align-items: center; padding: 8px 8px 8px 14px; }
+    .memory-header > div:first-child { min-width: 0; }
+    .memory-header > div:first-child > span { display: block; overflow: hidden; max-width: 44vw; text-overflow: ellipsis; white-space: nowrap; }
+    .memory-header-actions { gap: 7px; }
+    .memory-toggle { display: grid; }
+    .memory-panel.is-open .memory-toggle svg { transform: rotate(180deg); }
+    .memory-toggle svg { transition: transform 200ms ease; }
+    .trace-rail { padding: 2px 12px 6px; }
+    .trace-rail > header { margin-bottom: 5px; }
+    .trace-rail ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; overflow: hidden; }
+    .trace-rail li { min-width: 0; max-width: none; padding: 5px 7px; }
+    .trace-rail li:nth-last-child(n + 3) { display: none; }
+    .graph-help { display: none; }
+    .graph-visual svg { min-height: 0; }
+    .graph-node text { font-size: 16px; stroke-width: 7px; }
+    .memory-header dl { gap: 8px; }
+    .memory-header dl div { display: block; min-width: 31px; text-align: right; }
+    .memory-header dt { display: block; font-size: 8px; }
+    .memory-header dd { font-size: 12px; }
+    .memory-footer { display: none; }
+    .message { margin-bottom: 22px; }
     .message-body { max-width: none; }
-    .message.assistant .message-body { padding-left: 16px; }
-    .message.user .message-body { max-width: 96%; padding: 11px 13px 12px; }
+    .message.assistant .message-body { padding-left: 13px; }
+    .message.user .message-body { max-width: 88%; padding: 10px 12px 11px; }
     .message-content p { font-size: 14.5px; line-height: 1.58; }
     .message.user .message-content p { font-size: 14px; }
     .artifact-preview iframe { height: 280px; }
