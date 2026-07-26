@@ -8,8 +8,14 @@ import remarkGfm from "remark-gfm";
 import { BrandMark } from "./brand-mark";
 import { GraphView, type StateGraph } from "./graph-view";
 
-type GraphFrame = {
-  frame: Record<string, unknown>;
+type AgentState = {
+  version: 1;
+  nodes: Array<Record<string, unknown>>;
+  frontier: string[];
+};
+
+type AgentSnapshot = {
+  state: AgentState;
   graph: StateGraph;
 };
 
@@ -41,11 +47,11 @@ type StreamEvent = {
   step?: number;
   operationCount?: number;
   output?: string;
-  frame?: GraphFrame;
+  state?: AgentState;
   graph?: StateGraph;
   artifacts?: Artifact[];
   message?: string;
-  metadata?: { durationMs?: number; stepCount?: number; retryCount?: number };
+  metadata?: { durationMs?: number; stepCount?: number; retryCount?: number; engine?: string };
 };
 
 type PendingRun = {
@@ -56,12 +62,12 @@ type PendingRun = {
 
 type SavedSession = {
   messages: Message[];
-  frame?: GraphFrame;
+  snapshot?: AgentSnapshot;
   trace?: TraceItem[];
   pending?: PendingRun;
 };
 
-const SESSION_KEY = "stateweave-ai-session-v1";
+const SESSION_KEY = "stateweave-ai-session-v2";
 const RUN_RESTART_WINDOW_MS = 15_000;
 const emptyGraph: StateGraph = { nodes: [], edges: [] };
 const suggestions = [
@@ -72,7 +78,7 @@ const suggestions = [
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [frame, setFrame] = useState<GraphFrame>();
+  const [snapshot, setSnapshot] = useState<AgentSnapshot>();
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
   const [activity, setActivity] = useState("Ready");
@@ -114,28 +120,28 @@ export default function Home() {
     if (!input || sending) return;
 
     const pending = { id: crypto.randomUUID(), input, startedAt: currentTimestamp() } satisfies PendingRun;
-    const previousFrame = frame;
+    const previousSnapshot = snapshot;
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: input };
     const baseMessages = [...messages, userMessage].slice(-80);
-    traceRef.current = [{ id: "request", label: "Request received", detail: "Opening the current GraphFrame", status: "done" }];
+    traceRef.current = [{ id: "request", label: "Request received", detail: "Opening the current causal state", status: "done" }];
     setMessages(baseMessages);
     setPrompt("");
     setError("");
     setSending(true);
     setActivity("Opening the graph");
     setTrace(traceRef.current);
-    saveSession({ messages: baseMessages, frame: previousFrame, trace: traceRef.current, pending });
+    saveSession({ messages: baseMessages, snapshot: previousSnapshot, trace: traceRef.current, pending });
 
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ input, frame: previousFrame, runId: pending.id }),
+        body: JSON.stringify({ input, state: previousSnapshot?.state, runId: pending.id }),
       });
-      await consumeRun(response, baseMessages, previousFrame, pending);
+      await consumeRun(response, baseMessages, previousSnapshot, pending);
     } catch (caught) {
-      if (isTransportError(caught)) pauseRun(baseMessages, previousFrame, pending);
-      else failRun(caught, baseMessages, previousFrame);
+      if (isTransportError(caught)) pauseRun(baseMessages, previousSnapshot, pending);
+      else failRun(caught, baseMessages, previousSnapshot);
     } finally {
       setSending(false);
       inputRef.current?.focus();
@@ -156,20 +162,20 @@ export default function Home() {
         response = await fetch("/api/chat", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ input: saved.pending.input, frame: saved.frame, runId: saved.pending.id }),
+          body: JSON.stringify({ input: saved.pending.input, state: saved.snapshot?.state, runId: saved.pending.id }),
         });
       }
-      await consumeRun(response, baseMessages, saved.frame, saved.pending);
+      await consumeRun(response, baseMessages, saved.snapshot, saved.pending);
     } catch (caught) {
-      if (isTransportError(caught)) pauseRun(baseMessages, saved.frame, saved.pending);
-      else failRun(caught, baseMessages, saved.frame);
+      if (isTransportError(caught)) pauseRun(baseMessages, saved.snapshot, saved.pending);
+      else failRun(caught, baseMessages, saved.snapshot);
     } finally {
       setSending(false);
       inputRef.current?.focus();
     }
   }
 
-  async function consumeRun(response: Response, baseMessages: Message[], previousFrame: GraphFrame | undefined, pending: PendingRun) {
+  async function consumeRun(response: Response, baseMessages: Message[], previousSnapshot: AgentSnapshot | undefined, pending: PendingRun) {
     if (!response.ok || !response.body) {
       const payload = await response.json().catch(() => ({})) as { error?: string };
       throw new Error(payload.error ?? "StateWeave is unavailable.");
@@ -178,7 +184,7 @@ export default function Home() {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let latestFrame = previousFrame;
+    let latestSnapshot = previousSnapshot;
     let finalEvent: StreamEvent | undefined;
 
     while (true) {
@@ -189,17 +195,17 @@ export default function Home() {
       for (const line of lines) {
         if (!line.trim()) continue;
         const streamEvent = JSON.parse(line) as StreamEvent;
-        if (streamEvent.type === "graph" && streamEvent.frame && streamEvent.graph) {
-          latestFrame = streamEvent.frame;
-          setFrame(streamEvent.frame);
+        if (streamEvent.type === "graph" && streamEvent.graph) {
+          if (latestSnapshot) latestSnapshot = { ...latestSnapshot, graph: streamEvent.graph };
+          setSnapshot((current) => current ? { ...current, graph: streamEvent.graph! } : current);
           const count = `${streamEvent.graph.nodes.length} nodes · ${streamEvent.graph.edges.length} edges`;
-          if (streamEvent.phase === "before") {
-            setActivity("Reading the whole picture");
-            recordTrace({ id: `read-${streamEvent.step ?? 0}`, label: "Read graph", detail: count, status: "done", step: streamEvent.step });
-            recordTrace({ id: `model-${streamEvent.step ?? 0}`, label: "Model call", detail: `Step ${streamEvent.step ?? 1} · preparing GraphOps`, status: "active", step: streamEvent.step });
+          if (streamEvent.phase === "context") {
+            setActivity("Reading the causal state");
+            recordTrace({ id: `read-${streamEvent.step ?? 0}`, label: "Compiled state", detail: count, status: "done", step: streamEvent.step });
+            recordTrace({ id: `model-${streamEvent.step ?? 0}`, label: "Model call", detail: `Step ${streamEvent.step ?? 1} · causal projection ready`, status: "active", step: streamEvent.step });
           } else {
-            setActivity("Graph updated");
-            recordTrace({ id: `commit-${streamEvent.step ?? 0}`, label: "Committed graph", detail: count, status: "done", step: streamEvent.step });
+            setActivity("Causal state updated");
+            recordTrace({ id: `commit-${streamEvent.step ?? 0}`, label: "State updated", detail: count, status: "done", step: streamEvent.step });
           }
         } else if (streamEvent.type === "activity") {
           setActivity(activityLabel(streamEvent.phase, streamEvent.step));
@@ -210,12 +216,12 @@ export default function Home() {
         } else if (streamEvent.type === "final") {
           finalEvent = streamEvent;
         }
-        if (streamEvent.type !== "final") saveSession({ messages: baseMessages, frame: latestFrame, trace: traceRef.current, pending });
+        if (streamEvent.type !== "final") saveSession({ messages: baseMessages, snapshot: latestSnapshot, trace: traceRef.current, pending });
       }
       if (done) break;
     }
 
-    if (!finalEvent?.output || !finalEvent.frame) throw new Error("StateWeave finished without an answer.");
+    if (!finalEvent?.output || !finalEvent.state || !finalEvent.graph) throw new Error("StateWeave finished without an answer.");
     const assistantMessage: Message = {
       id: crypto.randomUUID(),
       role: "assistant",
@@ -224,7 +230,8 @@ export default function Home() {
     };
     const nextMessages = [...baseMessages, assistantMessage].slice(-80);
     setMessages(nextMessages);
-    setFrame(finalEvent.frame);
+    const finalSnapshot = { state: finalEvent.state, graph: finalEvent.graph };
+    setSnapshot(finalSnapshot);
     setActivity(finalEvent.metadata?.stepCount ? `Woven in ${finalEvent.metadata.stepCount} step${finalEvent.metadata.stepCount === 1 ? "" : "s"}` : "Graph updated");
     const finalTrace = recordTrace({
       id: "complete",
@@ -232,26 +239,26 @@ export default function Home() {
       detail: runSummary(finalEvent.metadata),
       status: "done",
     });
-    saveSession({ messages: nextMessages, frame: finalEvent.frame, trace: finalTrace });
+    saveSession({ messages: nextMessages, snapshot: finalSnapshot, trace: finalTrace });
   }
 
-  function pauseRun(baseMessages: Message[], previousFrame: GraphFrame | undefined, pending: PendingRun) {
+  function pauseRun(baseMessages: Message[], previousSnapshot: AgentSnapshot | undefined, pending: PendingRun) {
     const stored = readSession();
     const pausedTrace = recordTrace({ id: "reconnect", label: "Connection paused", detail: "Refresh to reconnect to the active run", status: "retrying" });
     setMessages(baseMessages);
     setActivity("Connection paused");
     setError("The connection was interrupted. Refresh to reconnect to the active run.");
-    saveSession({ messages: baseMessages, frame: stored?.frame ?? previousFrame, trace: pausedTrace, pending });
+    saveSession({ messages: baseMessages, snapshot: stored?.snapshot ?? previousSnapshot, trace: pausedTrace, pending });
   }
 
-  function failRun(caught: unknown, baseMessages: Message[], previousFrame: GraphFrame | undefined) {
+  function failRun(caught: unknown, baseMessages: Message[], previousSnapshot: AgentSnapshot | undefined) {
     const message = caught instanceof Error ? caught.message : "StateWeave could not complete this turn.";
     setMessages(baseMessages);
-    setFrame(previousFrame);
+    setSnapshot(previousSnapshot);
     setActivity("Run interrupted");
     setError(message);
     const failedTrace = recordTrace({ id: "failed", label: "Run interrupted", detail: message, status: "error" });
-    saveSession({ messages: baseMessages, frame: previousFrame, trace: failedTrace });
+    saveSession({ messages: baseMessages, snapshot: previousSnapshot, trace: failedTrace });
   }
 
   const resumePendingRun = useEffectEvent((saved: SavedSession) => {
@@ -265,7 +272,7 @@ export default function Home() {
       try {
         saved = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as SavedSession | null;
         if (saved?.messages && Array.isArray(saved.messages)) setMessages(saved.messages.slice(-80));
-        if (saved?.frame?.graph) setFrame(saved.frame);
+        if (saved?.snapshot?.state && saved.snapshot.graph) setSnapshot(saved.snapshot);
         if (Array.isArray(saved?.trace)) {
           traceRef.current = saved.trace.slice(-8);
           setTrace(traceRef.current);
@@ -284,9 +291,9 @@ export default function Home() {
   }, []);
 
   function startNewThread() {
-    if (sending || (!messages.length && !frame)) return;
+    if (sending || (!messages.length && !snapshot)) return;
     setMessages([]);
-    setFrame(undefined);
+    setSnapshot(undefined);
     setPrompt("");
     setError("");
     setActivity("Ready");
@@ -302,7 +309,7 @@ export default function Home() {
     inputRef.current?.focus();
   }
 
-  const graph = frame?.graph ?? emptyGraph;
+  const graph = snapshot?.graph ?? emptyGraph;
   const hasConversation = messages.length > 0;
 
   return (
@@ -416,7 +423,7 @@ export default function Home() {
           <GraphView graph={graph} active={sending} />
           <footer className="memory-footer">
             <span>StateGraph</span>
-            <span>GraphFrame → GraphOps → StateGraph</span>
+            <span>Causal graph → bounded context → causal graph</span>
           </footer>
         </aside>
       </section>
@@ -553,17 +560,12 @@ function MessageContent({ content, markdown }: { content: string; markdown: bool
 
 function traceItem(event: StreamEvent): TraceItem {
   const step = event.step ?? 0;
-  if (event.phase === "weaving" || event.phase === "ops") {
-    return { id: `ops-${step}`, label: "GraphOps", detail: `${event.operationCount ?? 0} operation${event.operationCount === 1 ? "" : "s"} validated`, status: "done", step };
-  }
-  if (event.phase === "retrying") return { id: `retry-${step}`, label: "Retrying GraphOps", detail: `Step ${step} did not validate`, status: "retrying", step };
-  if (event.phase === "error") return { id: `error-${step}`, label: "GraphOps rejected", detail: `Step ${step} stopped`, status: "error", step };
-  if (["queued", "started", "token", "done", "merged"].includes(event.phase ?? "")) {
-    const done = event.phase === "done" || event.phase === "merged";
-    return { id: `worker-${step}`, label: "Parallel branch", detail: done ? "Branch merged into the graph" : "Exploring focused context", status: done ? "done" : "active", step };
-  }
+  if (event.phase === "retrying") return { id: `retry-${step}`, label: "Retrying action", detail: `Step ${step} returned an invalid or unsupported action`, status: "retrying", step };
+  if (event.phase === "error") return { id: `error-${step}`, label: "Action rejected", detail: `Step ${step} stopped`, status: "error", step };
+  if (event.phase === "tool") return { id: `tool-${step}`, label: "Tool action", detail: "Recording tool evidence in causal state", status: "active", step };
+  if (event.phase === "final") return { id: `final-${step}`, label: "Finalizing", detail: "Committing the answer and semantic state", status: "active", step };
   if (event.phase === "starting") return { id: "starting", label: "Starting run", detail: "Preparing graph-native context", status: "active" };
-  return { id: `model-${step}`, label: "Model call", detail: `Step ${step || 1} · preparing GraphOps`, status: "active", step };
+  return { id: `model-${step}`, label: "Model call", detail: `Step ${step || 1} · using the bounded causal projection`, status: "active", step };
 }
 
 function runSummary(metadata?: StreamEvent["metadata"]): string {
@@ -576,9 +578,10 @@ function runSummary(metadata?: StreamEvent["metadata"]): string {
 function activityLabel(phase?: string, step?: number): string {
   if (phase === "starting") return "Preparing the graph";
   const suffix = step ? ` · step ${step}` : "";
-  if (phase === "weaving" || phase === "ops") return `Weaving new connections${suffix}`;
-  if (phase === "retrying") return `Refining the graph${suffix}`;
-  if (phase === "queued" || phase === "started") return `Exploring a branch${suffix}`;
-  if (phase === "thinking") return `Thinking with the graph${suffix}`;
+  if (phase === "context") return `Compiling causal context${suffix}`;
+  if (phase === "model") return `Thinking with the graph${suffix}`;
+  if (phase === "tool") return `Using a tool${suffix}`;
+  if (phase === "final") return `Committing causal state${suffix}`;
+  if (phase === "retrying") return `Refining the action${suffix}`;
   return `Working${suffix}`;
 }

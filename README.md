@@ -2,15 +2,15 @@
 
 Consumer StateWeave experience at [stateweave.ai](https://stateweave.ai).
 
-The interface runs the real [`stateweave/sdk-typescript`](https://github.com/stateweave/sdk-typescript) primitive on the server. Each browser owns a resumable `GraphFrame`; every turn streams graph frames from:
+The interface runs the public [`stateweave/sdk-typescript`](https://github.com/stateweave/sdk-typescript) `Agent` with the Causal Weave v3 engine. Each browser owns a resumable `AgentState`; every turn runs:
 
 ```txt
-StateGraph -> GraphFrame -> GraphOps -> StateGraph
+immutable causal graph -> bounded working context -> ordinary model action -> causal graph
 ```
 
-The graph visualization updates as validated GraphOps are applied. Conversation, graph state, and generated artifacts remain in browser storage for this MVP. The server does not persist chat history. Active runs use a bounded, five-minute in-memory event buffer keyed by an unguessable run id so a browser refresh can reconnect without cancelling or duplicating the model call; this buffer is transient and never written to disk.
+The graph visualization updates as causal state is compiled and committed. The runtime can preserve built-in `memory`, `preference`, `wisdom`, and `artifact` semantic nodes, plus bounded agent-created types, inside the same model action without a separate classification call. Conversation, causal state, and generated artifacts remain in browser storage for this MVP. The server does not persist chat history. Active runs use a bounded, five-minute in-memory event buffer keyed by an unguessable run id so a browser refresh can reconnect without cancelling or duplicating the model call; this buffer is transient and never written to disk.
 
-Self-contained HTML and SVG artifacts are returned as graph-referenced outputs and rendered in a browser iframe with an opaque sandbox origin, no parent-page access, a restrictive Content Security Policy, and no ordinary fetch/connect access. The commercial runtime does not expose filesystem or shell tools.
+Self-contained HTML and SVG artifacts are returned as typed semantic nodes and rendered in a browser iframe with an opaque sandbox origin, no parent-page access, a restrictive Content Security Policy, and no ordinary fetch/connect access. The commercial runtime does not expose filesystem or shell tools.
 
 `stateweave.ai` is not routed through the separate NVIDIA OpenShell alpha MVP. OpenShell remains an isolated evaluation runtime until its reliability and upgrade path are proven; generated web artifacts use the browser sandbox described above.
 
