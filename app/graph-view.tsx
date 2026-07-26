@@ -1,5 +1,6 @@
 "use client";
 
+import { ArrowCounterClockwise } from "@phosphor-icons/react";
 import { PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type GraphNode = {
@@ -38,20 +39,30 @@ type GraphLayout = { nodes: LayoutNode[]; edges: LayoutEdge[] };
 type SavedPosition = Pick<LayoutNode, "x" | "y" | "vx" | "vy" | "pinned">;
 type GraphPoint = { x: number; y: number };
 type DragState = { node: LayoutNode; pointerId: number; start: GraphPoint; moved: boolean };
+type Camera = { x: number; y: number; scale: number };
+type PanState = { pointerId: number; start: GraphPoint; camera: Camera };
+type PinchState = { midpoint: GraphPoint; distance: number; camera: Camera; anchor: GraphPoint };
 
 const WIDTH = 720;
 const HEIGHT = 560;
 const MAX_VISIBLE_NODES = 110;
 const BOUNDS = 38;
+const MIN_ZOOM = 0.55;
+const MAX_ZOOM = 4;
 
 export function GraphView({ graph, active }: { graph: StateGraph; active: boolean }) {
   const [selectedId, setSelectedId] = useState<string>();
   const [, setInteractionVersion] = useState(0);
   const svgRef = useRef<SVGSVGElement>(null);
+  const viewportRef = useRef<SVGGElement>(null);
   const nodeElements = useRef(new Map<string, SVGGElement>());
   const edgeElements = useRef<Array<SVGLineElement | null>>([]);
   const [positionStore] = useState(() => new Map<string, SavedPosition>());
   const drag = useRef<DragState | undefined>(undefined);
+  const pan = useRef<PanState | undefined>(undefined);
+  const pinch = useRef<PinchState | undefined>(undefined);
+  const pointers = useRef(new Map<number, GraphPoint>());
+  const camera = useRef<Camera>({ x: 0, y: 0, scale: 1 });
   const hoverPoint = useRef<GraphPoint | undefined>(undefined);
   const hoveredNodeId = useRef<string | undefined>(undefined);
   const layout = useMemo(() => buildLayout(graph, positionStore), [graph, positionStore]);
@@ -87,6 +98,24 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
     };
   }, [layout, positionStore]);
 
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const zoomWithWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const point = svgPoint(svg, event.clientX, event.clientY);
+      if (!point) return;
+      const current = camera.current;
+      const anchor = cameraPoint(point, current);
+      const scale = clamp(current.scale * Math.exp(-event.deltaY * .0015), MIN_ZOOM, MAX_ZOOM);
+      const next = { x: point.x - anchor.x * scale, y: point.y - anchor.y * scale, scale };
+      camera.current = next;
+      viewportRef.current?.setAttribute("transform", `translate(${next.x.toFixed(2)} ${next.y.toFixed(2)}) scale(${next.scale.toFixed(4)})`);
+    };
+    svg.addEventListener("wheel", zoomWithWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", zoomWithWheel);
+  }, [layout.nodes.length]);
+
   if (!layout.nodes.length) {
     return (
       <div className="graph-empty" aria-label="Empty StateWeave graph">
@@ -100,45 +129,113 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
     setSelectedId(node.id);
   }
 
-  function startDrag(event: ReactPointerEvent<SVGGElement>, node: LayoutNode) {
-    selectNode(node);
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const point = svgPoint(svgRef.current, event.clientX, event.clientY);
-    if (!point) return;
-    node.pinned = true;
-    node.x = clamp(point.x, BOUNDS, WIDTH - BOUNDS);
-    node.y = clamp(point.y, BOUNDS, HEIGHT - BOUNDS);
-    node.vx = 0;
-    node.vy = 0;
-    drag.current = { node, pointerId: event.pointerId, start: point, moved: false };
-    setInteractionVersion((version) => version + 1);
-    event.currentTarget.setPointerCapture(event.pointerId);
-    rememberPosition(node, positionStore);
-    updateGraphDom(layout, nodeElements.current, edgeElements.current);
+  function updateCamera(next: Camera) {
+    camera.current = { ...next, scale: clamp(next.scale, MIN_ZOOM, MAX_ZOOM) };
+    const current = camera.current;
+    viewportRef.current?.setAttribute("transform", `translate(${current.x.toFixed(2)} ${current.y.toFixed(2)}) scale(${current.scale.toFixed(4)})`);
   }
 
-  function moveDrag(event: ReactPointerEvent<SVGGElement>, node: LayoutNode) {
-    const current = drag.current;
-    if (!current || current.pointerId !== event.pointerId || current.node.id !== node.id) return;
-    event.preventDefault();
-    const point = svgPoint(svgRef.current, event.clientX, event.clientY);
-    if (!point) return;
-    current.moved = current.moved || Math.hypot(point.x - current.start.x, point.y - current.start.y) > 4;
-    node.x = clamp(point.x, BOUNDS, WIDTH - BOUNDS);
-    node.y = clamp(point.y, BOUNDS, HEIGHT - BOUNDS);
-    node.vx = 0;
-    node.vy = 0;
-    rememberPosition(node, positionStore);
-    updateGraphDom(layout, nodeElements.current, edgeElements.current);
-  }
-
-  function endDrag(event: ReactPointerEvent<SVGGElement>, node: LayoutNode) {
-    const current = drag.current;
-    if (!current || current.pointerId !== event.pointerId || current.node.id !== node.id) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    rememberPosition(node, positionStore);
+  function beginPinch() {
+    const points = [...pointers.current.values()].slice(0, 2);
+    if (points.length < 2) return;
+    const midpoint = midpointOf(points[0], points[1]);
+    const current = camera.current;
+    pinch.current = {
+      midpoint,
+      distance: Math.max(1, distanceBetween(points[0], points[1])),
+      camera: { ...current },
+      anchor: cameraPoint(midpoint, current),
+    };
+    if (drag.current) rememberPosition(drag.current.node, positionStore);
     drag.current = undefined;
+    pan.current = undefined;
+  }
+
+  function handlePointerDown(event: ReactPointerEvent<SVGSVGElement>) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const point = svgPoint(svgRef.current, event.clientX, event.clientY);
+    if (!point) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointers.current.set(event.pointerId, point);
+
+    if (pointers.current.size >= 2) {
+      beginPinch();
+      return;
+    }
+
+    const target = event.target as Element;
+    const nodeId = target.closest<SVGGElement>("[data-node-id]")?.dataset.nodeId;
+    const node = nodeId ? layout.nodes.find((candidate) => candidate.id === nodeId) : undefined;
+    if (node) {
+      selectNode(node);
+      const graphPoint = cameraPoint(point, camera.current);
+      node.x = clamp(graphPoint.x, BOUNDS, WIDTH - BOUNDS);
+      node.y = clamp(graphPoint.y, BOUNDS, HEIGHT - BOUNDS);
+      node.vx = 0;
+      node.vy = 0;
+      drag.current = { node, pointerId: event.pointerId, start: point, moved: false };
+      updateGraphDom(layout, nodeElements.current, edgeElements.current);
+    } else {
+      pan.current = { pointerId: event.pointerId, start: point, camera: { ...camera.current } };
+    }
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<SVGSVGElement>) {
+    const point = svgPoint(svgRef.current, event.clientX, event.clientY);
+    if (!point) return;
+    hoverPoint.current = cameraPoint(point, camera.current);
+    if (!pointers.current.has(event.pointerId)) return;
+    event.preventDefault();
+    pointers.current.set(event.pointerId, point);
+
+    if (pointers.current.size >= 2) {
+      const points = [...pointers.current.values()].slice(0, 2);
+      const gesture = pinch.current;
+      if (!gesture) return beginPinch();
+      const midpoint = midpointOf(points[0], points[1]);
+      const scale = clamp(gesture.camera.scale * distanceBetween(points[0], points[1]) / gesture.distance, MIN_ZOOM, MAX_ZOOM);
+      updateCamera({
+        x: midpoint.x - gesture.anchor.x * scale,
+        y: midpoint.y - gesture.anchor.y * scale,
+        scale,
+      });
+      return;
+    }
+
+    const currentDrag = drag.current;
+    if (currentDrag?.pointerId === event.pointerId) {
+      const graphPoint = cameraPoint(point, camera.current);
+      currentDrag.moved = currentDrag.moved || distanceBetween(currentDrag.start, point) > 4;
+      if (currentDrag.moved) currentDrag.node.pinned = true;
+      currentDrag.node.x = clamp(graphPoint.x, BOUNDS, WIDTH - BOUNDS);
+      currentDrag.node.y = clamp(graphPoint.y, BOUNDS, HEIGHT - BOUNDS);
+      currentDrag.node.vx = 0;
+      currentDrag.node.vy = 0;
+      rememberPosition(currentDrag.node, positionStore);
+      updateGraphDom(layout, nodeElements.current, edgeElements.current);
+      return;
+    }
+
+    const currentPan = pan.current;
+    if (currentPan?.pointerId === event.pointerId) {
+      updateCamera({
+        x: currentPan.camera.x + point.x - currentPan.start.x,
+        y: currentPan.camera.y + point.y - currentPan.start.y,
+        scale: currentPan.camera.scale,
+      });
+    }
+  }
+
+  function handlePointerEnd(event: ReactPointerEvent<SVGSVGElement>) {
+    if (drag.current?.pointerId === event.pointerId) rememberPosition(drag.current.node, positionStore);
+    pointers.current.delete(event.pointerId);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    drag.current = undefined;
+    pan.current = undefined;
+    pinch.current = undefined;
+    const remaining = [...pointers.current.entries()][0];
+    if (remaining) pan.current = { pointerId: remaining[0], start: remaining[1], camera: { ...camera.current } };
   }
 
   function releaseNode(node: LayoutNode) {
@@ -150,15 +247,22 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
 
   return (
     <div className={`graph-visual ${active ? "is-active" : ""}`}>
-      <div className="graph-help">Drag to reshape · double-click to release</div>
+      <div className="graph-help"><span>Drag nodes · scroll to zoom</span><span>Drag nodes · pinch to zoom</span></div>
+      <button className="graph-reset" type="button" aria-label="Reset graph view" title="Reset graph view" onClick={() => updateCamera({ x: 0, y: 0, scale: 1 })}>
+        <ArrowCounterClockwise size={16} />
+      </button>
       <svg
         ref={svgRef}
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         role="img"
         aria-label={`Interactive StateWeave graph with ${graph.nodes.length} nodes and ${graph.edges.length} edges`}
-        onPointerMove={(event) => { hoverPoint.current = svgPoint(svgRef.current, event.clientX, event.clientY); }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
         onPointerLeave={() => { hoverPoint.current = undefined; hoveredNodeId.current = undefined; }}
       >
+        <g ref={viewportRef} className="graph-viewport">
         <g className="graph-edges">
           {layout.edges.map((edge, index) => (
             <line
@@ -185,16 +289,13 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
                   else nodeElements.current.delete(node.id);
                 }}
                 className={`graph-node node-${slug(node.type)} ${selectedNode ? "is-selected" : ""} ${node.pinned ? "is-pinned" : ""}`}
+                data-node-id={node.id}
                 transform={`translate(${node.x} ${node.y})`}
                 role="button"
                 tabIndex={0}
                 aria-label={`${node.type}: ${node.text}`}
                 onPointerEnter={() => { hoveredNodeId.current = node.id; }}
                 onPointerLeave={() => { if (hoveredNodeId.current === node.id) hoveredNodeId.current = undefined; }}
-                onPointerDown={(event) => startDrag(event, node)}
-                onPointerMove={(event) => moveDrag(event, node)}
-                onPointerUp={(event) => endDrag(event, node)}
-                onPointerCancel={(event) => endDrag(event, node)}
                 onDoubleClick={() => releaseNode(node)}
                 onClick={() => selectNode(node)}
                 onKeyDown={(event) => {
@@ -213,6 +314,7 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
               </g>
             );
           })}
+        </g>
         </g>
       </svg>
       {selected ? (
@@ -359,6 +461,18 @@ function repelFromPoint(node: LayoutNode, point: GraphPoint, radius: number, str
   const force = ((radius - distance) / radius) * strength;
   node.vx += (dx / distance) * force;
   node.vy += (dy / distance) * force;
+}
+
+function cameraPoint(point: GraphPoint, camera: Camera): GraphPoint {
+  return { x: (point.x - camera.x) / camera.scale, y: (point.y - camera.y) / camera.scale };
+}
+
+function midpointOf(a: GraphPoint, b: GraphPoint): GraphPoint {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+function distanceBetween(a: GraphPoint, b: GraphPoint): number {
+  return Math.hypot(b.x - a.x, b.y - a.y);
 }
 
 function svgPoint(svg: SVGSVGElement | null, clientX: number, clientY: number): GraphPoint | undefined {
