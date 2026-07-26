@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowCounterClockwise } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, X } from "@phosphor-icons/react";
 import { PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type GraphNode = {
@@ -246,7 +246,7 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
   }
 
   return (
-    <div className={`graph-visual ${active ? "is-active" : ""}`}>
+    <div className={`graph-visual ${active ? "is-active" : ""} ${selected ? "has-selection" : ""}`}>
       <div className="graph-help"><span>Drag nodes · scroll to zoom</span><span>Drag nodes · pinch to zoom</span></div>
       <button className="graph-reset" type="button" aria-label="Reset graph view" title="Reset graph view" onClick={() => updateCamera({ x: 0, y: 0, scale: 1 })}>
         <ArrowCounterClockwise size={16} />
@@ -318,10 +318,17 @@ export function GraphView({ graph, active }: { graph: StateGraph; active: boolea
         </g>
       </svg>
       {selected ? (
-        <div className="node-inspector">
-          <span>{humanType(selected.type)}{selected.pinned ? " · pinned" : ""}</span>
-          <p>{selected.text}</p>
-        </div>
+        <section className="node-inspector" aria-label={`${humanType(selected.type)} node context`}>
+          <header>
+            <span>{humanType(selected.type)}{selected.pinned ? " · pinned" : ""}</span>
+            <button type="button" aria-label="Close node context" onClick={() => setSelectedId(undefined)}>
+              <X size={15} weight="bold" />
+            </button>
+          </header>
+          <div className="node-inspector-content" tabIndex={0}>
+            <p>{selected.text}</p>
+          </div>
+        </section>
       ) : null}
     </div>
   );
