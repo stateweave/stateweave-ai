@@ -334,7 +334,7 @@ export default function Home() {
         </div>
       </nav>
 
-      <section className={`agent-stage ${hasConversation ? "has-conversation" : ""} ${ready ? "is-ready" : ""}`}>
+      <section className={`agent-stage ${hasConversation ? "has-conversation" : ""} ${memoryOpen ? "has-memory-open" : ""} ${ready ? "is-ready" : ""}`}>
         <div className="conversation-panel">
           {!hasConversation ? (
             <header className="intro">
@@ -441,10 +441,6 @@ export default function Home() {
           <div className="memory-details" id="memory-details">
             <TraceRail items={trace} active={sending} />
             <GraphView graph={graph} active={sending} />
-            <footer className="memory-footer">
-              <span>StateGraph</span>
-              <span>Causal graph → bounded context → causal graph</span>
-            </footer>
           </div>
         </aside>
       </section>

@@ -495,7 +495,7 @@
     min-width: 0;
     min-height: 0;
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
   }
 
@@ -590,18 +590,38 @@
   .trace-rail .trace-error { border-color: var(--danger); }
 
   .graph-visual { position: relative; min-height: 0; overflow: hidden; }
-  .node-hit { fill: transparent; stroke: none; }
-  .graph-visual svg { width: 100%; height: 100%; min-height: 380px; overflow: visible; touch-action: none; }
+  .node-hit { fill: transparent; stroke: transparent; stroke-width: 24px; vector-effect: non-scaling-stroke; pointer-events: all; }
+  .graph-visual > svg { width: 100%; height: 100%; min-height: 380px; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
+  .graph-visual > svg:active { cursor: grabbing; }
   .graph-help {
     position: absolute;
     z-index: 2;
-    top: 7px;
+    top: 9px;
     right: 14px;
     color: var(--muted);
     font-family: var(--font-mono), monospace;
     font-size: 8px;
     pointer-events: none;
   }
+  .graph-help span:last-child { display: none; }
+  .graph-reset {
+    position: absolute;
+    z-index: 4;
+    top: 7px;
+    left: 12px;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    color: var(--green-deep);
+    background: color-mix(in srgb, var(--paper-raised) 88%, transparent);
+    backdrop-filter: blur(12px);
+    transition: transform 160ms ease, border-color 160ms ease;
+  }
+  .graph-reset:hover { border-color: var(--green); }
+  .graph-reset:active { transform: scale(.96); }
 
   .graph-edge {
     stroke: color-mix(in srgb, var(--green-deep) 32%, transparent);
@@ -667,19 +687,6 @@
   }
   .node-inspector span { color: var(--green); font-family: var(--font-mono), monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
   .node-inspector p { margin: 4px 0 0; font-size: 11px; line-height: 1.4; }
-
-  .memory-footer {
-    position: relative;
-    z-index: 3;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 15px;
-    padding: 10px 22px 16px;
-    color: var(--muted);
-    font-family: var(--font-mono), monospace;
-    font-size: 9px;
-  }
 
   .has-conversation .conversation-panel { justify-content: stretch; padding-top: 8px; padding-bottom: 2px; }
   .has-conversation .prompt-area { flex: 0 0 auto; margin-top: 18px; max-width: none; }
@@ -971,7 +978,7 @@
     .has-conversation .memory-panel { order: -1; min-height: 280px; height: 36dvh; }
     .has-conversation .conversation-panel { min-height: 58dvh; padding: 0; }
     .has-conversation .messages { max-height: 52dvh; }
-    .graph-visual svg { min-height: 250px; }
+    .graph-visual > svg { min-height: 250px; }
   }
 
   @media (max-width: 600px), (max-height: 600px) and (max-width: 920px) {
@@ -1055,7 +1062,7 @@
     .trace-rail li { min-width: 0; max-width: none; padding: 5px 7px; }
     .trace-rail li:nth-last-child(n + 3) { display: none; }
     .graph-help { display: none; }
-    .graph-visual svg { min-height: 0; }
+    .graph-visual > svg { min-height: 0; }
     .graph-node text { font-size: 16px; stroke-width: 7px; }
     .memory-header dl { gap: 8px; }
     .memory-header dl div { display: block; min-width: 31px; text-align: right; }
@@ -1083,6 +1090,47 @@
     .message-meta { margin-bottom: 4px; }
     .message-content p { line-height: 1.4; }
     .has-conversation .prompt-area { padding-top: 4px; }
+  }
+
+  @media (max-width: 920px) {
+    .has-conversation.agent-stage {
+      height: calc(100dvh - 64px - env(safe-area-inset-bottom, 0px));
+      min-height: 0;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 8px;
+      overflow: hidden;
+    }
+    .has-conversation.has-memory-open { grid-template-rows: minmax(0, 1fr); }
+    .has-conversation .memory-panel {
+      order: -1;
+      min-height: 0;
+      height: 58px;
+      border-radius: 15px;
+      transition: height 240ms cubic-bezier(.16, 1, .3, 1), border-radius 240ms ease;
+    }
+    .has-conversation .memory-panel.is-open {
+      height: 100%;
+      border-radius: 18px;
+    }
+    .has-conversation.has-memory-open .conversation-panel { display: none; }
+    .has-conversation .conversation-panel { min-height: 0; height: auto; overflow: hidden; padding: 0; }
+    .has-conversation .messages { max-height: none; min-height: 0; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+    .has-conversation .prompt-area { margin-top: 0; padding-bottom: max(10px, env(safe-area-inset-bottom, 0px)); }
+    .memory-toggle { display: grid; }
+    .has-conversation .memory-details { display: none; }
+    .has-conversation .memory-panel.is-open .memory-details {
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+    }
+    .has-conversation .memory-panel.is-open .trace-rail,
+    .has-conversation .memory-panel.is-open .memory-footer { display: none; }
+    .has-conversation .memory-panel.is-open .graph-visual { min-height: 0; }
+    .has-conversation .memory-panel.is-open .graph-visual > svg { min-height: 0; }
+    .has-conversation .memory-panel.is-open .graph-help { display: block; top: 8px; left: 12px; right: auto; }
+    .has-conversation .memory-panel.is-open .graph-help span:first-child { display: none; }
+    .has-conversation .memory-panel.is-open .graph-help span:last-child { display: inline; }
+    .has-conversation .memory-panel.is-open .graph-reset { top: auto; left: auto; right: 10px; bottom: 10px; width: 44px; height: 44px; }
+    .has-conversation .memory-panel.is-open .node-inspector { bottom: 10px; max-width: calc(100% - 78px); }
   }
 
   @media (max-width: 380px) {
