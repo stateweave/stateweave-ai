@@ -412,12 +412,28 @@
 
   .input-row { display: grid; grid-template-columns: 38px 1fr 38px; align-items: end; gap: 7px; }
   .composer-thread {
+    position: relative;
     align-self: center;
     justify-self: center;
     width: 14px;
     height: 2px;
     background: var(--green);
     box-shadow: 0 -4px 0 color-mix(in srgb, var(--green) 45%, transparent), 0 4px 0 color-mix(in srgb, var(--green) 45%, transparent);
+  }
+  .composer-thread::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    background: var(--green);
+  }
+  .composer-thread.is-thinking {
+    background: color-mix(in srgb, var(--green) 32%, transparent);
+    box-shadow: 0 -4px 0 color-mix(in srgb, var(--green) 32%, transparent), 0 4px 0 color-mix(in srgb, var(--green) 32%, transparent);
+  }
+  .composer-thread.is-thinking::after {
+    opacity: 1;
+    animation: thread-shuttle 1.2s cubic-bezier(.45, 0, .55, 1) infinite;
   }
 
   textarea {
@@ -1016,6 +1032,12 @@
   @keyframes graph-pulse { from { opacity: .65; transform: translate(-50%, -50%) scale(.35); } to { opacity: 0; transform: translate(-50%, -50%) scale(1.4); } }
   @keyframes empty-breathe { to { opacity: 0; transform: scale(1.7); } }
   @keyframes weave-thinking { to { transform: scaleY(.35); opacity: .45; } }
+  @keyframes thread-shuttle {
+    0%, 20% { transform: translateY(-4px); }
+    33%, 53% { transform: translateY(0); }
+    66%, 86% { transform: translateY(4px); }
+    100% { transform: translateY(-4px); }
+  }
 
   @media (max-width: 920px) {
     .shell { overflow: auto; }
@@ -1237,5 +1259,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+    .composer-thread.is-thinking { background: var(--green); }
+    .composer-thread.is-thinking::after { display: none; }
   }
 }
