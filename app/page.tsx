@@ -405,7 +405,7 @@ export default function Home() {
             <form className="composer" onSubmit={submit}>
               <label htmlFor="prompt">{hasConversation ? "Continue the thread." : "Begin anywhere."}</label>
               <div className="input-row">
-                <span className="composer-thread" aria-hidden="true" />
+                <span className={`composer-thread ${sending ? "is-thinking" : ""}`} aria-hidden="true" />
                 <textarea
                   id="prompt"
                   ref={inputRef}
