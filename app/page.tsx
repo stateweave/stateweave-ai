@@ -65,9 +65,12 @@ type SavedSession = {
   snapshot?: AgentSnapshot;
   trace?: TraceItem[];
   pending?: PendingRun;
+  acceptedAt?: number;
+  expiresAt?: number;
 };
 
 const SESSION_KEY = "stateweave-ai-session-v2";
+const SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
 const RUN_RESTART_WINDOW_MS = 15_000;
 const emptyGraph: StateGraph = { nodes: [], edges: [] };
 const suggestions = [
@@ -87,6 +90,8 @@ export default function Home() {
   const [openArtifact, setOpenArtifact] = useState<Artifact>();
   const [trace, setTrace] = useState<TraceItem[]>([]);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [previewAccepted, setPreviewAccepted] = useState(false);
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<number>();
   const traceRef = useRef<TraceItem[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -118,9 +123,14 @@ export default function Home() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const input = prompt.trim();
-    if (!input || sending) return;
+    if (!input || sending || !previewAccepted) return;
 
-    const pending = { id: crypto.randomUUID(), input, startedAt: currentTimestamp() } satisfies PendingRun;
+    const now = currentTimestamp();
+    const existingSession = readSession();
+    const acceptedAt = existingSession?.acceptedAt ?? now;
+    const expiresAt = existingSession?.expiresAt ?? now + SESSION_TTL_MS;
+    setSessionExpiresAt(expiresAt);
+    const pending = { id: crypto.randomUUID(), input, startedAt: now } satisfies PendingRun;
     const previousSnapshot = snapshot;
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: input };
     const baseMessages = [...messages, userMessage].slice(-80);
@@ -132,7 +142,7 @@ export default function Home() {
     setSending(true);
     setActivity("Opening the graph");
     setTrace(traceRef.current);
-    saveSession({ messages: baseMessages, snapshot: previousSnapshot, trace: traceRef.current, pending });
+    saveSession({ messages: baseMessages, snapshot: previousSnapshot, trace: traceRef.current, pending, acceptedAt, expiresAt });
 
     try {
       const response = await fetch("/api/chat", {
@@ -268,16 +278,30 @@ export default function Home() {
   });
 
   useEffect(() => {
+    if (!sessionExpiresAt) return;
+    const remaining = Math.max(0, sessionExpiresAt - currentTimestamp());
+    const expiry = window.setTimeout(() => {
+      localStorage.removeItem(SESSION_KEY);
+      window.location.reload();
+    }, remaining);
+    return () => window.clearTimeout(expiry);
+  }, [sessionExpiresAt]);
+
+  useEffect(() => {
     let cancelled = false;
     const restore = window.setTimeout(() => {
       let saved: SavedSession | null = null;
       try {
-        saved = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as SavedSession | null;
+        saved = readSession();
         if (saved?.messages && Array.isArray(saved.messages)) setMessages(saved.messages.slice(-80));
         if (saved?.snapshot?.state && saved.snapshot.graph) setSnapshot(saved.snapshot);
         if (Array.isArray(saved?.trace)) {
           traceRef.current = saved.trace.slice(-8);
           setTrace(traceRef.current);
+        }
+        if (saved?.acceptedAt && saved.expiresAt) {
+          setPreviewAccepted(true);
+          setSessionExpiresAt(saved.expiresAt);
         }
       } catch {
         localStorage.removeItem(SESSION_KEY);
@@ -301,6 +325,8 @@ export default function Home() {
     setActivity("Ready");
     setOpenArtifact(undefined);
     setMemoryOpen(false);
+    setPreviewAccepted(false);
+    setSessionExpiresAt(undefined);
     traceRef.current = [];
     setTrace([]);
     localStorage.removeItem(SESSION_KEY);
@@ -400,10 +426,20 @@ export default function Home() {
                   placeholder={hasConversation ? "Add what matters next" : "Tell us what matters"}
                   disabled={sending}
                 />
-                <button className="send" type="submit" aria-label="Send prompt" disabled={sending || !prompt.trim()}>
+                <button className="send" type="submit" aria-label="Send prompt" disabled={sending || !prompt.trim() || (!hasConversation && !previewAccepted)}>
                   <ArrowUp size={18} weight="bold" />
                 </button>
               </div>
+              {!hasConversation ? (
+                <label className="preview-consent">
+                  <input
+                    type="checkbox"
+                    checked={previewAccepted}
+                    onChange={(event) => setPreviewAccepted(event.target.checked)}
+                  />
+                  <span>24-hour browser session. No database history; reconnect cache clears in 5 minutes.</span>
+                </label>
+              ) : null}
             </form>
 
             {!hasConversation ? (
@@ -474,8 +510,14 @@ function isTransportError(error: unknown): boolean {
 
 function readSession(): SavedSession | null {
   try {
-    return JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as SavedSession | null;
+    const session = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as SavedSession | null;
+    if (!session?.expiresAt || !Number.isFinite(session.expiresAt) || session.expiresAt <= currentTimestamp()) {
+      localStorage.removeItem(SESSION_KEY);
+      return null;
+    }
+    return session;
   } catch {
+    localStorage.removeItem(SESSION_KEY);
     return null;
   }
 }
@@ -486,7 +528,10 @@ function currentTimestamp(): number {
 
 function saveSession(session: SavedSession): void {
   try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    const current = readSession();
+    const acceptedAt = session.acceptedAt ?? current?.acceptedAt;
+    const expiresAt = session.expiresAt ?? current?.expiresAt;
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ ...session, acceptedAt, expiresAt }));
   } catch {
     // The active UI remains usable even if browser storage is unavailable or full.
   }
