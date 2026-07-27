@@ -1,3 +1,6 @@
+import { createHash, randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   Agent,
   AgentRunError,
@@ -16,14 +19,25 @@ const MAX_BODY_BYTES = 1_500_000;
 const MAX_NODES = 600;
 const MAX_ARTIFACTS = 3;
 const MAX_ARTIFACT_BYTES = 100_000;
-const RATE_WINDOW_MS = 30 * 60 * 1_000;
-const RATE_LIMIT = 15;
+const BURST_WINDOW_MS = 60 * 1_000;
+const BURST_LIMIT = boundedEnvInteger("STATEWEAVE_BURST_LIMIT", 4, 1, 30);
+const DAILY_IP_LIMIT = boundedEnvInteger("STATEWEAVE_DAILY_IP_LIMIT", 12, 1, 100);
+const DAILY_GLOBAL_LIMIT = boundedEnvInteger("STATEWEAVE_DAILY_GLOBAL_LIMIT", 300, 1, 10_000);
+const RATE_DATA_PATH = "/data/rate-limits.json";
 const MAX_JOBS = 32;
 const MAX_BUFFERED_EVENTS = 40;
 const JOB_TIMEOUT_MS = 210_000;
 const COMPLETED_JOB_TTL_MS = 5 * 60 * 1_000;
-const rateBuckets = new Map<string, { count: number; resetsAt: number }>();
+const burstBuckets = new Map<string, { count: number; resetsAt: number }>();
 const encoder = new TextEncoder();
+
+type DailyRateState = { day: string; salt: string; total: number; addresses: Record<string, number> };
+type Allowance = {
+  allowed: boolean;
+  resetsAt: number;
+  reason?: "burst" | "ip" | "global" | "unavailable";
+};
+let dailyRateState: DailyRateState | undefined;
 
 const nodeTypes: SemanticNodeType[] = [
   { name: "memory", description: "A durable fact or context useful in later turns." },
@@ -80,13 +94,6 @@ export async function POST(request: Request): Promise<Response> {
   const existing = jobs.get(runId);
   if (existing) return jobResponse(existing);
 
-  const allowance = consumeAllowance(clientAddress(request));
-  if (!allowance.allowed) {
-    return Response.json(
-      { error: "This thread has reached the preview limit. Try again in a little while." },
-      { status: 429, headers: { "retry-after": String(Math.ceil((allowance.resetsAt - Date.now()) / 1_000)) } },
-    );
-  }
   if (jobs.size >= MAX_JOBS) return Response.json({ error: "StateWeave is handling too many active runs. Try again shortly." }, { status: 503 });
 
   const input = typeof body.input === "string" ? body.input.trim() : "";
@@ -114,6 +121,9 @@ export async function POST(request: Request): Promise<Response> {
   } catch {
     return Response.json({ error: "The saved state failed validation. Start a new thread." }, { status: 400 });
   }
+
+  const allowance = consumeAllowance(clientAddress(request));
+  if (!allowance.allowed) return allowanceResponse(allowance);
 
   const job: ChatJob = {
     id: runId,
@@ -294,26 +304,93 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function consumeAllowance(key: string): { allowed: boolean; resetsAt: number } {
+function consumeAllowance(address: string): Allowance {
   const now = Date.now();
-  if (rateBuckets.size > 5_000) {
-    for (const [address, bucket] of rateBuckets) if (bucket.resetsAt <= now) rateBuckets.delete(address);
+  const day = new Date(now).toISOString().slice(0, 10);
+  const resetsAt = nextUtcDay(now);
+  try {
+    const state = loadDailyRateState(day);
+    const addressKey = createHash("sha256").update(`${state.salt}:${day}:${address}`).digest("base64url").slice(0, 24);
+    const addressCount = state.addresses[addressKey] ?? 0;
+    if (state.total >= DAILY_GLOBAL_LIMIT) return { allowed: false, resetsAt, reason: "global" };
+    if (addressCount >= DAILY_IP_LIMIT) return { allowed: false, resetsAt, reason: "ip" };
+    const burst = consumeBurst(address, now);
+    if (!burst.allowed) return burst;
+    state.total += 1;
+    state.addresses[addressKey] = addressCount + 1;
+    persistDailyRateState(state);
+    return { allowed: true, resetsAt };
+  } catch (error) {
+    console.error("StateWeave rate-limit persistence failed", error);
+    return { allowed: false, resetsAt: now + 60_000, reason: "unavailable" };
   }
-  const current = rateBuckets.get(key);
+}
+
+function consumeBurst(address: string, now: number): Allowance {
+  if (burstBuckets.size > 5_000) {
+    for (const [key, bucket] of burstBuckets) if (bucket.resetsAt <= now) burstBuckets.delete(key);
+  }
+  const current = burstBuckets.get(address);
   if (!current || current.resetsAt <= now) {
-    const resetsAt = now + RATE_WINDOW_MS;
-    rateBuckets.set(key, { count: 1, resetsAt });
+    const resetsAt = now + BURST_WINDOW_MS;
+    burstBuckets.set(address, { count: 1, resetsAt });
     return { allowed: true, resetsAt };
   }
-  if (current.count >= RATE_LIMIT) return { allowed: false, resetsAt: current.resetsAt };
+  if (current.count >= BURST_LIMIT) return { allowed: false, resetsAt: current.resetsAt, reason: "burst" };
   current.count += 1;
   return { allowed: true, resetsAt: current.resetsAt };
 }
 
+function loadDailyRateState(day: string): DailyRateState {
+  if (dailyRateState?.day === day) return dailyRateState;
+  try {
+    const parsed = JSON.parse(readFileSync(RATE_DATA_PATH, "utf8")) as Partial<DailyRateState>;
+    if (parsed.day === day && typeof parsed.salt === "string" && parsed.salt.length >= 32 && Number.isSafeInteger(parsed.total) && parsed.total! >= 0 && parsed.addresses && typeof parsed.addresses === "object") {
+      dailyRateState = { day, salt: parsed.salt, total: parsed.total!, addresses: parsed.addresses as Record<string, number> };
+      return dailyRateState;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  dailyRateState = { day, salt: randomBytes(32).toString("base64url"), total: 0, addresses: {} };
+  return dailyRateState;
+}
+
+function persistDailyRateState(state: DailyRateState): void {
+  mkdirSync(dirname(RATE_DATA_PATH), { recursive: true });
+  const temporaryPath = `${RATE_DATA_PATH}.${process.pid}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporaryPath, RATE_DATA_PATH);
+}
+
+function nextUtcDay(now: number): number {
+  const current = new Date(now);
+  return Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1);
+}
+
+function allowanceResponse(allowance: Allowance): Response {
+  const retryAfter = String(Math.max(1, Math.ceil((allowance.resetsAt - Date.now()) / 1_000)));
+  if (allowance.reason === "unavailable") {
+    return Response.json({ error: "The preview limit is temporarily unavailable. Try again shortly." }, { status: 503, headers: { "retry-after": retryAfter } });
+  }
+  const error = allowance.reason === "global"
+    ? "Today’s StateWeave preview capacity has been reached. Try again tomorrow."
+    : allowance.reason === "ip"
+      ? `This preview allows ${DAILY_IP_LIMIT} message${DAILY_IP_LIMIT === 1 ? "" : "s"} per network each day. Try again tomorrow.`
+      : "Please wait a moment before sending another message.";
+  return Response.json({ error }, { status: 429, headers: { "retry-after": retryAfter } });
+}
+
 function clientAddress(request: Request): string {
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || request.headers.get("x-real-ip")
-    || "unknown";
+  const realAddress = request.headers.get("x-real-ip")?.trim();
+  if (realAddress) return realAddress;
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",").map((part) => part.trim()).filter(Boolean);
+  return forwarded?.at(-1) || "unknown";
+}
+
+function boundedEnvInteger(name: string, fallback: number, minimum: number, maximum: number): number {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value >= minimum && value <= maximum ? value : fallback;
 }
 
 function safeError(error: unknown): string {

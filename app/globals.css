@@ -273,7 +273,7 @@
     box-shadow: 13px 13px 0 var(--coral);
   }
 
-  .is-empty .composer label {
+  .is-empty .composer > label[for="prompt"] {
     font-family: var(--font-mono), monospace;
     font-size: 11px;
     letter-spacing: .08em;
@@ -380,12 +380,34 @@
     box-shadow: 0 34px 84px -32px var(--shadow), 0 0 0 3px color-mix(in srgb, var(--green-bright) 18%, transparent);
   }
 
-  .composer label {
+  .composer > label[for="prompt"] {
     display: block;
     padding: 3px 8px 11px;
     color: var(--ink);
     font-size: 13px;
     font-weight: 580;
+  }
+
+  .preview-consent {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 8px 6px 0;
+    border-top: 1px solid color-mix(in srgb, var(--ink) 13%, transparent);
+    padding: 10px 2px 1px;
+    color: color-mix(in srgb, var(--ink) 72%, transparent);
+    font-family: var(--font-mono), monospace;
+    font-size: 10px;
+    letter-spacing: .01em;
+    line-height: 1.45;
+    text-transform: none;
+  }
+  .preview-consent input {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+    margin: 0;
+    accent-color: var(--green-deep);
   }
 
   .input-row { display: grid; grid-template-columns: 38px 1fr 38px; align-items: end; gap: 7px; }
@@ -1096,7 +1118,7 @@
       padding: 7px 0 max(10px, env(safe-area-inset-bottom, 0px));
     }
     .has-conversation .composer { border-radius: 14px; padding: 10px; }
-    .has-conversation .composer label { padding: 2px 6px 7px; font-size: 12px; }
+    .has-conversation .composer > label[for="prompt"] { padding: 2px 6px 7px; font-size: 12px; }
     .memory-header { min-height: 56px; align-items: center; padding: 8px 8px 8px 14px; }
     .memory-header > div:first-child { min-width: 0; }
     .memory-header > div:first-child > span { display: block; overflow: hidden; max-width: 44vw; text-overflow: ellipsis; white-space: nowrap; }
@@ -1199,7 +1221,7 @@
     .is-empty .intro p { margin-top: 15px; font-size: 13px; }
     .is-empty .suggestions { margin-top: 14px; }
     .is-empty .suggestions button { font-size: 10px; }
-    .composer label { padding-inline: 5px; }
+    .composer > label[for="prompt"] { padding-inline: 5px; }
   }
 
   @media (max-height: 700px) and (min-width: 921px) {
