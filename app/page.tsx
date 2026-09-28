@@ -41,6 +41,18 @@ type TraceItem = {
   step?: number;
 };
 
+type RecallSummary = {
+  status: "empty" | "small_state" | "ranked" | "fallback";
+  model?: string;
+  sourceNodes: number;
+  candidateWindows: number;
+  selectedWindows: number;
+  visibleWindows: number;
+  latencyMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+};
+
 type StreamEvent = {
   type: "activity" | "graph" | "final" | "error";
   phase?: string;
@@ -50,8 +62,9 @@ type StreamEvent = {
   state?: AgentState;
   graph?: StateGraph;
   artifacts?: Artifact[];
+  recall?: RecallSummary;
   message?: string;
-  metadata?: { durationMs?: number; stepCount?: number; retryCount?: number; engine?: string };
+  metadata?: { durationMs?: number; stepCount?: number; retryCount?: number; engine?: string; recall?: RecallSummary };
 };
 
 type PendingRun = {
@@ -213,6 +226,7 @@ export default function Home() {
           const count = `${streamEvent.graph.nodes.length} nodes · ${streamEvent.graph.edges.length} edges`;
           if (streamEvent.phase === "context") {
             setActivity("Reading the causal state");
+            if (streamEvent.recall) recordTrace(recallTraceItem(streamEvent.recall, streamEvent.step));
             recordTrace({ id: `read-${streamEvent.step ?? 0}`, label: "Compiled state", detail: count, status: "done", step: streamEvent.step });
             recordTrace({ id: `model-${streamEvent.step ?? 0}`, label: "Model call", detail: `Step ${streamEvent.step ?? 1} · causal projection ready`, status: "active", step: streamEvent.step });
           } else {
@@ -437,7 +451,7 @@ export default function Home() {
                     checked={previewAccepted}
                     onChange={(event) => setPreviewAccepted(event.target.checked)}
                   />
-                  <span>24-hour browser session. No database history; reconnect cache clears in 5 minutes.</span>
+                  <span>Prompts and bounded memory excerpts are processed by StateWeave model providers, including Jev. Browser history expires in 24 hours; reconnect cache clears in 5 minutes.</span>
                 </label>
               ) : null}
             </form>
@@ -628,6 +642,16 @@ function traceItem(event: StreamEvent): TraceItem {
   if (event.phase === "final") return { id: `final-${step}`, label: "Finalizing", detail: "Committing the answer and semantic state", status: "active", step };
   if (event.phase === "starting") return { id: "starting", label: "Starting run", detail: "Preparing graph-native context", status: "active" };
   return { id: `model-${step}`, label: "Model call", detail: `Step ${step || 1} · using the bounded causal projection`, status: "active", step };
+}
+
+function recallTraceItem(recall: RecallSummary, step = 0): TraceItem {
+  if (recall.status === "ranked") {
+    const model = recall.model ?? "Jev";
+    return { id: `recall-${step}`, label: "Jev source recall", detail: `${model} · ${recall.visibleWindows}/${recall.selectedWindows} windows used · ${recall.latencyMs}ms`, status: "done", step };
+  }
+  if (recall.status === "fallback") return { id: `recall-${step}`, label: "Recall fallback", detail: "Jev was unavailable; bounded lexical source recall was used", status: "done", step };
+  if (recall.status === "small_state") return { id: `recall-${step}`, label: "Native recall", detail: "Small bounded state · no provider call needed", status: "done", step };
+  return { id: `recall-${step}`, label: "Native recall", detail: "No historical source windows yet", status: "done", step };
 }
 
 function runSummary(metadata?: StreamEvent["metadata"]): string {

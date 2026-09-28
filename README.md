@@ -8,7 +8,9 @@ The interface runs the public [`stateweave/sdk-typescript`](https://github.com/s
 immutable causal graph -> bounded working context -> ordinary model action -> causal graph
 ```
 
-The graph visualization updates as causal state is compiled and committed. The runtime can preserve built-in `memory`, `preference`, `wisdom`, and `artifact` semantic nodes, plus bounded agent-created types, inside the same model action without a separate classification call. Conversation, causal state, and generated artifacts remain only in browser storage for this preview and expire after 24 hours. The visitor must acknowledge this before the first turn. The server does not persist chat history. Active runs use a bounded, five-minute in-memory event buffer keyed by an unguessable run id so a browser refresh can reconnect without cancelling or duplicating the model call; this buffer is transient and never written to disk.
+The graph visualization updates as causal state is compiled and committed. The runtime can preserve built-in `memory`, `preference`, `wisdom`, and `artifact` semantic nodes, plus bounded agent-created types, inside the same model action without a separate classification call. Native Jev recall is mandatory and automatic: when historical state exceeds the ordinary bounded projection, the server sends the current query and bounded exact source excerpts to `jev-1.13.0` for advisory relevance ranking. Small states avoid a needless recall call. Jev never rewrites graph truth or authorizes actions; transient outages use a visible lexical fallback.
+
+Conversation, causal state, and generated artifacts remain only in browser storage for this preview and expire after 24 hours. The visitor must acknowledge model-provider processing before the first turn. The server does not persist chat history. Active runs use a bounded, five-minute in-memory event buffer keyed by an unguessable run id so a browser refresh can reconnect without cancelling or duplicating the model call; this buffer is transient and never written to disk.
 
 The public preview allows four new turns per network per minute, twelve per network per UTC day, and 300 globally per UTC day. Daily counters survive deploys in a private Docker volume and store only day-scoped salted SHA-256 address identifiers, never raw IP addresses or message content. The global ceiling limits provider exposure even when someone rotates IP addresses.
 
@@ -30,7 +32,7 @@ npm install
 npm run dev
 ```
 
-Set the supported Anthropic environment variables server-side. Never expose the provider key through `NEXT_PUBLIC_*` variables. Optional `STATEWEAVE_BURST_LIMIT`, `STATEWEAVE_DAILY_IP_LIMIT`, and `STATEWEAVE_DAILY_GLOBAL_LIMIT` values override the conservative preview defaults.
+Set the supported Anthropic environment variables and mandatory `TYPESAFE_API_KEY` server-side. Never expose either provider key through `NEXT_PUBLIC_*` variables. Optional `STATEWEAVE_BURST_LIMIT`, `STATEWEAVE_DAILY_IP_LIMIT`, and `STATEWEAVE_DAILY_GLOBAL_LIMIT` values override the conservative preview defaults.
 
 ## Checks
 
