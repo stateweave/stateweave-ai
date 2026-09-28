@@ -1,5 +1,5 @@
 FROM node:22-alpine AS sdk
-ARG STATEWEAVE_SDK_REF=c34d288234e8e9522188b28607baa0f1138f2b5f
+ARG STATEWEAVE_SDK_REF=a903a63fd12702e718f01a800d1f95ecc1558761
 RUN apk add --no-cache git && corepack enable
 RUN git clone https://github.com/stateweave/sdk-typescript.git /sdk \
     && cd /sdk \

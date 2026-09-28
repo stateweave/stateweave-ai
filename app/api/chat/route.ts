@@ -5,9 +5,11 @@ import {
   Agent,
   AgentRunError,
   AnthropicModel,
+  JevSetupError,
   anthropicConfigFromEnv,
   type AgentState,
   type AgentStreamEvent,
+  type RecallDiagnostics,
   type SemanticNodeType,
 } from "stateweave";
 
@@ -73,7 +75,7 @@ const jobGlobal = globalThis as typeof globalThis & { __stateweaveChatJobsV3?: M
 const jobs = jobGlobal.__stateweaveChatJobsV3 ??= new Map<string, ChatJob>();
 
 export async function POST(request: Request): Promise<Response> {
-  if (!process.env.ANTHROPIC_API_KEY) return Response.json({ error: "The StateWeave model is not configured." }, { status: 503 });
+  if (!process.env.ANTHROPIC_API_KEY || !process.env.TYPESAFE_API_KEY) return Response.json({ error: "The StateWeave model is not configured." }, { status: 503 });
   cleanupJobs();
 
   const contentLength = Number(request.headers.get("content-length") ?? 0);
@@ -108,6 +110,7 @@ export async function POST(request: Request): Promise<Response> {
   try {
     agent = new Agent({
       model,
+      jev: { model: "jev-1.13.0" },
       tools: [],
       state,
       systemPrompt,
@@ -118,7 +121,8 @@ export async function POST(request: Request): Promise<Response> {
       projectionTargetTokens: 16_000,
       enforceCompletionEvidence: false,
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof JevSetupError) return Response.json({ error: "The StateWeave model is not configured." }, { status: 503 });
     return Response.json({ error: "The saved state failed validation. Start a new thread." }, { status: 400 });
   }
 
@@ -249,9 +253,10 @@ function publicEvent(event: AgentStreamEvent, initialNodeCount: number): Record<
         phase: event.progress.phase,
         step: event.progress.iteration,
         graph: event.progress.graph,
+        recall: publicRecall(event.progress.recall),
       };
     }
-    return { type: "activity", phase: event.progress.phase, step: event.progress.iteration, tool: event.progress.tool };
+    return { type: "activity", phase: event.progress.phase, step: event.progress.iteration, tool: event.progress.tool, recall: publicRecall(event.progress.recall) };
   }
   if (event.type === "final") {
     const artifacts = publicArtifacts(event.result.state, initialNodeCount);
@@ -265,10 +270,38 @@ function publicEvent(event: AgentStreamEvent, initialNodeCount: number): Record<
         durationMs: event.result.metadata.durationMs,
         stepCount: event.result.metadata.stepCount,
         engine: event.result.metadata.engine,
+        recall: publicRecall(event.result.metadata.recall),
       },
     };
   }
   return undefined;
+}
+
+type PublicRecall = {
+  status: RecallDiagnostics["status"];
+  model?: string;
+  sourceNodes: number;
+  candidateWindows: number;
+  selectedWindows: number;
+  visibleWindows: number;
+  latencyMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+};
+
+function publicRecall(recall: RecallDiagnostics | undefined): PublicRecall | undefined {
+  if (!recall) return undefined;
+  return {
+    status: recall.status,
+    model: recall.ranking?.model,
+    sourceNodes: recall.sourceNodes,
+    candidateWindows: recall.candidateWindows,
+    selectedWindows: recall.selectedWindows,
+    visibleWindows: recall.visibleWindowIds?.length ?? 0,
+    latencyMs: recall.latencyMs,
+    inputTokens: recall.ranking?.inputTokens,
+    outputTokens: recall.ranking?.outputTokens,
+  };
 }
 
 function publicArtifacts(state: AgentState, initialNodeCount: number): Array<{ id: string; title: string; mime: string; content: string }> {
