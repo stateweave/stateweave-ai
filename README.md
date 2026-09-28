@@ -12,6 +12,8 @@ The graph visualization updates as causal state is compiled and committed. The r
 
 Conversation, causal state, and generated artifacts remain only in browser storage for this preview and expire after 24 hours. The visitor must acknowledge model-provider processing before the first turn. The server does not persist chat history. Active runs use a bounded, five-minute in-memory event buffer keyed by an unguessable run id so a browser refresh can reconnect without cancelling or duplicating the model call; this buffer is transient and never written to disk.
 
+The answering model is GLM 5.3 Flash. If it fails before emitting visible text with a transient availability, overload, rate-limit, timeout, network, empty-response, or upstream-server error, the same bounded inference automatically continues once through GLM 5.2. Authentication and client errors still fail closed, cancellation never triggers a fallback, and a stream is never restarted after visible text. The activity rail reports the model switch rather than hiding it.
+
 The public preview allows four new turns per network per minute, twelve per network per UTC day, and 300 globally per UTC day. Daily counters survive deploys in a private Docker volume and store only day-scoped salted SHA-256 address identifiers, never raw IP addresses or message content. The global ceiling limits provider exposure even when someone rotates IP addresses.
 
 Self-contained HTML and SVG artifacts are returned as typed semantic nodes and rendered in a browser iframe with an opaque sandbox origin, no parent-page access, a restrictive Content Security Policy, and no ordinary fetch/connect access. The commercial runtime does not expose filesystem or shell tools.
@@ -32,11 +34,12 @@ npm install
 npm run dev
 ```
 
-Set the supported Anthropic environment variables and mandatory `TYPESAFE_API_KEY` server-side. Never expose either provider key through `NEXT_PUBLIC_*` variables. Optional `STATEWEAVE_BURST_LIMIT`, `STATEWEAVE_DAILY_IP_LIMIT`, and `STATEWEAVE_DAILY_GLOBAL_LIMIT` values override the conservative preview defaults.
+Set the supported Anthropic environment variables and mandatory `TYPESAFE_API_KEY` server-side. `ANTHROPIC_MODEL` selects the primary answering model; `ANTHROPIC_FALLBACK_MODEL` defaults to `glm-5.2`. Never expose either provider key through `NEXT_PUBLIC_*` variables. Optional `STATEWEAVE_BURST_LIMIT`, `STATEWEAVE_DAILY_IP_LIMIT`, and `STATEWEAVE_DAILY_GLOBAL_LIMIT` values override the conservative preview defaults.
 
 ## Checks
 
 ```bash
+npm test
 npm run lint
 npm run build
 npm audit --omit=dev
