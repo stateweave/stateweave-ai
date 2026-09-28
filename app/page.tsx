@@ -64,6 +64,9 @@ type StreamEvent = {
   artifacts?: Artifact[];
   recall?: RecallSummary;
   message?: string;
+  fromModel?: string;
+  toModel?: string;
+  reason?: string;
   metadata?: { durationMs?: number; stepCount?: number; retryCount?: number; engine?: string; recall?: RecallSummary };
 };
 
@@ -636,6 +639,7 @@ function MessageContent({ content, markdown }: { content: string; markdown: bool
 
 function traceItem(event: StreamEvent): TraceItem {
   const step = event.step ?? 0;
+  if (event.phase === "model_fallback") return { id: `model-fallback-${step}`, label: "Backup model", detail: `${event.fromModel ?? "Primary model"} was unavailable · continuing with ${event.toModel ?? "the backup"}`, status: "retrying", step };
   if (event.phase === "retrying") return { id: `retry-${step}`, label: "Retrying action", detail: `Step ${step} returned an invalid or unsupported action`, status: "retrying", step };
   if (event.phase === "error") return { id: `error-${step}`, label: "Action rejected", detail: `Step ${step} stopped`, status: "error", step };
   if (event.phase === "tool") return { id: `tool-${step}`, label: "Tool action", detail: "Recording tool evidence in causal state", status: "active", step };
@@ -663,6 +667,7 @@ function runSummary(metadata?: StreamEvent["metadata"]): string {
 
 function activityLabel(phase?: string, step?: number): string {
   if (phase === "starting") return "Preparing the graph";
+  if (phase === "model_fallback") return "Continuing with the backup model";
   const suffix = step ? ` · step ${step}` : "";
   if (phase === "context") return `Compiling causal context${suffix}`;
   if (phase === "model") return `Thinking with the graph${suffix}`;

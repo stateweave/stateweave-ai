@@ -9,9 +9,11 @@ import {
   anthropicConfigFromEnv,
   type AgentState,
   type AgentStreamEvent,
+  type Model,
   type RecallDiagnostics,
   type SemanticNodeType,
 } from "stateweave";
+import { ModelFallback } from "./model-fallback";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -105,7 +107,12 @@ export async function POST(request: Request): Promise<Response> {
   const state = readState(body.state);
   if (body.state && !state) return Response.json({ error: "The saved state is invalid or too large. Start a new thread." }, { status: 400 });
 
-  const model = new AnthropicModel(anthropicConfigFromEnv(process.env));
+  let model: Model;
+  try {
+    model = createAnsweringModel();
+  } catch {
+    return Response.json({ error: "The StateWeave model is not configured." }, { status: 503 });
+  }
   let agent: Agent;
   try {
     agent = new Agent({
@@ -246,6 +253,16 @@ function validRunId(value: string): boolean {
 
 function publicEvent(event: AgentStreamEvent, initialNodeCount: number): Record<string, unknown> | undefined {
   if (event.type === "metadata") return { type: "activity", phase: "starting" };
+  if (event.type === "model_metadata" && event.metadata.event === "model_fallback") {
+    return {
+      type: "activity",
+      phase: "model_fallback",
+      step: event.iteration,
+      fromModel: event.metadata.fromModel,
+      toModel: event.metadata.toModel,
+      reason: event.metadata.reason,
+    };
+  }
   if (event.type === "progress") {
     if (event.progress.graph) {
       return {
@@ -424,6 +441,22 @@ function clientAddress(request: Request): string {
 function boundedEnvInteger(name: string, fallback: number, minimum: number, maximum: number): number {
   const value = Number(process.env[name]);
   return Number.isSafeInteger(value) && value >= minimum && value <= maximum ? value : fallback;
+}
+
+function createAnsweringModel(): Model {
+  const config = anthropicConfigFromEnv(process.env);
+  const primaryModel = config.model?.trim() || "configured-primary";
+  const fallbackModel = (process.env.ANTHROPIC_FALLBACK_MODEL ?? "glm-5.2").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(fallbackModel)) throw new Error("ANTHROPIC_FALLBACK_MODEL is invalid.");
+  const primary = new AnthropicModel(config);
+  if (fallbackModel === primaryModel) return primary;
+  return new ModelFallback({
+    primary,
+    fallback: new AnthropicModel({ ...config, model: fallbackModel }),
+    primaryModel,
+    fallbackModel,
+    onFallback: ({ fromModel, toModel, reason }) => console.warn("StateWeave answering-model fallback", { fromModel, toModel, reason }),
+  });
 }
 
 function safeError(error: unknown): string {
